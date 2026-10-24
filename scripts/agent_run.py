@@ -670,14 +670,60 @@ def cmd_batch(a):
                   f"changed={len(m['changed'])}{viol} {m['run_dir']}")
             worst = max(worst, 1 if not m["ok"] else (3 if m["violations"] else 0))
 
-    junc = ao.audit_batch_junctions(settled["packages"], meta_by_name, project_dir=proj_dir)
+        # --- Wave Keyhole Interlock Gate (before launching next wave) ---
+        wave_junc = ao.audit_batch_junctions(w_pkgs, meta_by_name, project_dir=proj_dir, plan=plan)
+        if wave_junc["invariant_violations"] or wave_junc["cross_package_conflicts"]:
+            print(f"[INTERLOCK TRIPPED after wave {w_idx}] Prerequisite/Threshold drift or silent cross-package conflict detected:")
+            for iv in wave_junc["invariant_violations"]:
+                print(f"  ! {iv}")
+            for cc in wave_junc["cross_package_conflicts"]:
+                print(f"  # {cc}")
+            worst = max(worst, 3)
+            if w_idx + 1 < len(settled["waves"]):
+                print(f"[INTERLOCK HALT] Stopping remaining {len(settled['waves']) - w_idx - 1} wave(s) to prevent cascading conflict.")
+                break
+
+        if wave_junc["truth_amendments"]:
+            if getattr(a, "auto_amend", False):
+                for am in wave_junc["truth_amendments"]:
+                    am_res = ao.amend_truth_contract(
+                        plan_path, [am], project_dir=proj_dir, author_pkg=am.get("author") or "worker"
+                    )
+                    if am_res["applied"]:
+                        plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
+                        settled = ao.settle_plan(plan, project_dir=proj_dir)
+                        print(
+                            f"[TRUTH AMENDED -> v{am_res['truth_version']}] {am.get('key')} -> {am.get('proposed_value')} "
+                            f"(broadcast {am_res['notice_file']} mounted into remaining waves; stale={am_res['stale_packages']})"
+                        )
+            elif w_idx + 1 < len(settled["waves"]):
+                print(f"[INTERLOCK PAUSE after wave {w_idx}] Worker proposed {len(wave_junc['truth_amendments'])} Truth Amendment(s):")
+                for am in wave_junc["truth_amendments"]:
+                    print(
+                        f"  @ {am.get('author')}: {am.get('key')} -> {am.get('proposed_value')} | "
+                        f"Reason: {am.get('reason')} | Evidence: {am.get('evidence')}"
+                    )
+                print("Run `anatomy.py amend <plan.json> --set KEY=VAL --evidence \"...\"` (or pass `--auto-amend`) so all packages stay synchronized.")
+                worst = max(worst, 2)
+                break
+
+    junc = ao.audit_batch_junctions(settled["packages"], meta_by_name, project_dir=proj_dir, plan=plan)
     print(f"[junctions 4x] missing_outputs={len(junc['missing_outputs'])} "
+          f"invariant_violations={len(junc['invariant_violations'])} "
+          f"cross_package_conflicts={len(junc['cross_package_conflicts'])} "
+          f"truth_amendments={len(junc['truth_amendments'])} "
           f"assumptions_challenged={len(junc['assumptions_challenged'])} "
           f"open_questions={len(junc['open_questions'])} "
           f"evidence_warnings={len(junc['evidence_warnings'])}")
     for item in junc["missing_outputs"]:
         print(f"  MISSING OUTPUT: {item}")
         worst = max(worst, 1)
+    for item in junc["invariant_violations"]:
+        print(f"  INVARIANT VIOLATION: {item}")
+        worst = max(worst, 3)
+    for item in junc["cross_package_conflicts"]:
+        print(f"  CROSS-PACKAGE CONFLICT: {item}")
+        worst = max(worst, 3)
     for item in junc["assumptions_challenged"]:
         print(f"  PREMISE CHALLENGED: {item}")
     for item in junc["open_questions"][:5]:
@@ -793,7 +839,8 @@ def main():
     b.add_argument("plan")
     b.add_argument("--wip", type=int)
     b.add_argument("--project-dir", default=None, help="project root directory for resolving relative paths in plan.json")
-    b.add_argument("--audit", action="store_true", help="prove the batch plan (0 collisions, 0 cycles, 0 dangling mounts, 0 hollow briefs) and exit")
+    b.add_argument("--audit", action="store_true", help="prove the batch plan (0 collisions, 0 cycles, 0 dangling mounts, 0 hollow briefs, 0 interlock errors) and exit")
+    b.add_argument("--auto-amend", action="store_true", help="automatically apply evidence-backed truth_amendments between waves and propagate notice to downstream waves")
     b.add_argument("--allow-spawn", action="store_true")
     v = sub.add_parser("verdict")
     v.add_argument("target", help="run dir, or '-' with --agent/--task-type/--tier")

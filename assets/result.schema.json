@@ -51,6 +51,27 @@
     "handoff_notes": {
       "type": "string",
       "description": "Optional: direct technical notes, invariants, or warnings (with `file:line`) for the next agent in a pipeline or review."
+    },
+    "truth_amendments": {
+      "type": "array",
+      "description": "Optional: formal request to amend a locked prerequisite, threshold, or shared interface in the Truth Contract when empirical evidence proves the initial value is infeasible. Never mutate shared constants silently; declare amendments here with proof so all sibling/downstream packages are updated.",
+      "items": {
+        "type": "object",
+        "required": ["key", "proposed_value", "reason", "evidence"],
+        "properties": {
+          "key": { "type": "string", "description": "Invariant or shared parameter/interface name (e.g. MAX_BATCH_SIZE, PORT, API_SCHEMA)." },
+          "old_value": { "type": "string", "description": "Previous locked value in Truth Contract." },
+          "proposed_value": { "type": "string", "description": "New value proposed by this package." },
+          "op": { "type": "string", "enum": ["=", "<=", ">=", "<", ">", "must", "forbid"], "default": "=" },
+          "reason": { "type": "string", "description": "Why the amendment is necessary." },
+          "evidence": { "type": "string", "description": "Verifiable proof (`file:line` or `command -> output`) justifying the change." },
+          "affected_packages": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Other packages that must be notified or re-synced if this amendment is adopted."
+          }
+        }
+      }
     }
   }
 }

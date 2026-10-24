@@ -5,6 +5,7 @@ State folder (shared by every installed copy of the skill): %USERPROFILE%\\.agen
 """
 import ctypes
 import glob
+import hashlib
 import json
 import os
 import re
@@ -734,6 +735,387 @@ def size_tier_of_plan(n_pkgs):
     return "epic"
 
 
+# ---------- Truth Interlock, Threshold Keyholes & Change-Ripple Engine ----------
+def parse_invariant_spec(spec):
+    """Parse a CLI or JSON invariant/threshold specification into a normalized dict.
+    Supported string formats:
+      - 'MAX_LATENCY_MS<=200', 'MIN_ACC>=0.95', 'TIMEOUT_S<30', 'WORKERS>1'
+      - 'API_VERSION=v2', 'EMBED_DIM=768'
+      - 'must:verify_signature' (deliverables must contain pattern)
+      - 'forbid:eval(' (deliverables must never contain pattern)
+    """
+    if isinstance(spec, dict):
+        k = str(spec.get("key") or spec.get("pattern") or "").strip()
+        op = str(spec.get("op") or spec.get("type") or "=").strip()
+        val = str(spec.get("value") if spec.get("value") is not None else "").strip()
+        if op in ("must_contain", "must"):
+            return {"key": k or val, "op": "must", "value": val or k}
+        if op in ("forbid_pattern", "forbid"):
+            return {"key": k or val, "op": "forbid", "value": val or k}
+        return {"key": k, "op": op, "value": val}
+    raw = str(spec or "").strip()
+    if not raw:
+        raise ValueError("Empty invariant spec")
+    if raw.lower().startswith("must:"):
+        pat = raw[5:].strip()
+        return {"key": pat, "op": "must", "value": pat}
+    if raw.lower().startswith("forbid:"):
+        pat = raw[7:].strip()
+        return {"key": pat, "op": "forbid", "value": pat}
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_.-]*)\s*(<=|>=|==|=|<|>)\s*(.+)$", raw)
+    if not m:
+        raise ValueError(f"Invalid invariant spec '{raw}': expected KEY=VAL, KEY<=VAL, KEY>=VAL, must:PAT, or forbid:PAT")
+    key, op, val = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+    if op == "==":
+        op = "="
+    return {"key": key, "op": op, "value": val}
+
+
+def extract_invariants(plan, project_dir=None):
+    """Extract normalized list of locked prerequisites/thresholds from plan dict and truth_contract."""
+    proj = Path(project_dir or ".").resolve()
+    invs = []
+    seen = set()
+    raw_list = (plan.get("invariants") or []) if isinstance(plan, dict) else []
+    for item in raw_list:
+        try:
+            norm = parse_invariant_spec(item)
+            sig = (norm["key"], norm["op"])
+            if sig not in seen:
+                seen.add(sig)
+                invs.append(norm)
+        except ValueError:
+            pass
+    tc = plan.get("truth_contract") if isinstance(plan, dict) else None
+    if tc:
+        tc_path = Path(tc) if Path(tc).is_absolute() else (proj / tc)
+        if tc_path.exists():
+            try:
+                txt = tc_path.read_text(encoding="utf-8", errors="replace")
+                m = re.search(r"<!--\s*INVARIANTS_JSON:\s*(\[.*?\])\s*-->", txt, re.S)
+                if m:
+                    for item in json.loads(m.group(1)):
+                        norm = parse_invariant_spec(item)
+                        sig = (norm["key"], norm["op"])
+                        if sig not in seen:
+                            seen.add(sig)
+                            invs.append(norm)
+            except (OSError, ValueError):
+                pass
+    return invs
+
+
+def compute_truth_hash(truth_contract_path=None, invariants=None):
+    """Compute deterministic SHA-256 keyhole digest over truth_contract file + locked invariants."""
+    h = hashlib.sha256()
+    if truth_contract_path and Path(truth_contract_path).exists():
+        try:
+            raw = Path(truth_contract_path).read_bytes().replace(b"\r\n", b"\n")
+            h.update(raw)
+        except OSError:
+            pass
+    norm_invs = [parse_invariant_spec(x) for x in (invariants or [])]
+    norm_invs.sort(key=lambda x: (x["key"], x["op"], x["value"]))
+    h.update(json.dumps(norm_invs, sort_keys=True).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _normalize_scalar(val_str):
+    s = str(val_str).strip().strip("\"'`")
+    try:
+        if "." in s:
+            return float(s), s
+        return int(s), s
+    except ValueError:
+        return None, s
+
+
+def check_invariant_drift(invariants, file_paths, project_dir=None):
+    """Scan modified/produced files against locked user prerequisites and threshold bounds.
+    Returns a list of concrete violation strings with exact file:line anchors."""
+    if not invariants:
+        return []
+    proj = Path(project_dir or ".").resolve()
+    norm_invs = [parse_invariant_spec(x) for x in invariants]
+    violations = []
+    must_found = {inv["value"]: False for inv in norm_invs if inv["op"] == "must"}
+
+    readable_files = []
+    for fp in (file_paths or []):
+        p = Path(fp) if Path(fp).is_absolute() else (proj / fp)
+        if p.exists() and p.is_file():
+            readable_files.append((str(fp).replace("\\", "/"), p))
+
+    for rel_path, p in readable_files:
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for lno, line in enumerate(lines, 1):
+            for inv in norm_invs:
+                op = inv["op"]
+                key = inv["key"]
+                expected_raw = inv["value"]
+                if op == "must":
+                    if expected_raw in line:
+                        must_found[expected_raw] = True
+                elif op == "forbid":
+                    if expected_raw in line:
+                        violations.append(
+                            f"FORBID_VIOLATION: {rel_path}:{lno} contains forbidden pattern '{expected_raw}'"
+                        )
+                else:
+                    # Match assignments: KEY = val, "KEY": val, KEY: val, const KEY = val
+                    pat = rf"""(?:^|[\s"'\b]){re.escape(key)}["']?\s*(?::=|=|:)\s*("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b[A-Za-z0-9_.-]+\b)"""
+                    m = re.search(pat, line)
+                    if not m:
+                        continue
+                    # Ignore comments or markdown bullet descriptions of the invariant itself
+                    stripped = line.lstrip()
+                    if stripped.startswith(("#", "//", "/*", "*", "<!--")):
+                        continue
+                    actual_tok = m.group(1).strip()
+                    act_num, act_str = _normalize_scalar(actual_tok)
+                    exp_num, exp_str = _normalize_scalar(expected_raw)
+                    if op == "=":
+                        mismatch = (act_num != exp_num) if (act_num is not None and exp_num is not None) else (act_str != exp_str)
+                        if mismatch:
+                            violations.append(
+                                f"INVARIANT_DRIFT: {rel_path}:{lno} sets {key}={actual_tok} (locked prerequisite requires {key}={expected_raw})"
+                            )
+                    elif op in ("<=", ">=", "<", ">") and act_num is not None and exp_num is not None:
+                        ok = (
+                            (op == "<=" and act_num <= exp_num) or
+                            (op == ">=" and act_num >= exp_num) or
+                            (op == "<" and act_num < exp_num) or
+                            (op == ">" and act_num > exp_num)
+                        )
+                        if not ok:
+                            violations.append(
+                                f"THRESHOLD_VIOLATION: {rel_path}:{lno} sets {key}={actual_tok} (violates locked threshold {key}{op}{expected_raw})"
+                            )
+
+    if readable_files:
+        for pat, found in must_found.items():
+            if not found:
+                violations.append(f"MUST_VIOLATION: required pattern '{pat}' was not found in any deliverable/modified file")
+    return violations
+
+
+def detect_cross_package_conflicts(settled_pkgs, results_by_name, project_dir=None, invariants=None):
+    """Detect when one package changes a shared constant/parameter/config key while other packages
+    silently use a different/old value ('1 ông thay, mấy ông khác nín thin dẫn đến xung đột')."""
+    proj = Path(project_dir or ".").resolve()
+    norm_invs = [parse_invariant_spec(x) for x in (invariants or [])]
+    watched_keys = {x["key"] for x in norm_invs if x["op"] == "="}
+    threshold_only_keys = {x["key"] for x in norm_invs if x["op"] in ("<=", ">=", "<", ">")}
+    # Track key -> list of (pkg_name, value_str, rel_file, line_no)
+    key_sightings = {}
+    assign_re = re.compile(
+        r"""^\s*(?:export\s+|const\s+|let\s+|var\s+|final\s+)?["']?([A-Z][A-Z0-9_]{3,}|[A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?::=|=|:)\s*("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b(?:true|false|True|False|[A-Za-z0-9_.-]+)\b)"""
+    )
+
+    for p in settled_pkgs:
+        pname = p["name"]
+        meta = results_by_name.get(pname) or {}
+        candidate_files = list(p.get("outputs") or []) + list(meta.get("changed") or [])
+        seen_paths = set()
+        for fp in candidate_files:
+            norm_fp = str(fp).replace("\\", "/")
+            if norm_fp in seen_paths or norm_fp.startswith(".orch/"):
+                continue
+            seen_paths.add(norm_fp)
+            abs_p = Path(fp) if Path(fp).is_absolute() else (proj / fp)
+            if not abs_p.exists() or not abs_p.is_file():
+                continue
+            try:
+                lines = abs_p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for lno, line in enumerate(lines, 1):
+                stripped = line.lstrip()
+                if stripped.startswith(("#", "//", "/*", "*", "<!--", "-", ">")):
+                    continue
+                m = assign_re.match(line)
+                if not m:
+                    continue
+                k, raw_v = m.group(1), m.group(2)
+                if k in threshold_only_keys:
+                    continue
+                if not (k.isupper() or k in watched_keys):
+                    continue
+                _, clean_v = _normalize_scalar(raw_v)
+                key_sightings.setdefault(k, []).append((pname, clean_v, norm_fp, lno))
+
+    conflicts = []
+    for k, sightings in sorted(key_sightings.items()):
+        pkgs_involved = {s[0] for s in sightings}
+        if len(pkgs_involved) < 2:
+            continue
+        # Look at the latest value per package
+        by_pkg = {}
+        for pname, clean_v, norm_fp, lno in sightings:
+            by_pkg[pname] = (clean_v, norm_fp, lno)
+        distinct_vals = {v[0] for v in by_pkg.values()}
+        if len(distinct_vals) > 1:
+            parts = [f"{pname} sets {k}={info[0]} ({info[1]}:{info[2]})" for pname, info in sorted(by_pkg.items())]
+            conflicts.append(f"CROSS_PACKAGE_CONFLICT on '{k}': " + " vs. ".join(parts))
+    return conflicts
+
+
+def amend_truth_contract(plan_path, amendments, project_dir=None, author_pkg="manager"):
+    """Formal Change-Ripple & Invalidation Engine:
+    When a locked prerequisite/threshold must change (backed by empirical evidence):
+      1. Validates evidence anchor (No Proof = No Amendment).
+      2. Updates `invariants`, increments `truth_version`, updates `truth-contract.md`, and recomputes `truth_hash`.
+      3. Broadcasts `.orch/truth-amendment-vN.md` into `context_file` of all packages so no downstream agent misses it.
+      4. Scans already-completed packages to mark any package that used the old value as `stale_packages` (forcing resync instead of silent divergence).
+    """
+    pfile = Path(plan_path).resolve()
+    proj = Path(project_dir).resolve() if project_dir else (
+        pfile.parent.parent if pfile.parent.name == ".orch" else pfile.parent
+    )
+    plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
+    invs = extract_invariants(plan, proj)
+    inv_map = {inv["key"]: dict(inv) for inv in invs}
+
+    applied = []
+    rejected = []
+    anchor_re = re.compile(
+        r"([A-Za-z0-9_./\\-]+:\d+|->|https?://|`[^`]+`|\b\d+(\.\d+)?%|\bexit\s+\d+|\bline\s+\d+|\[E\d+\])",
+        re.I
+    )
+
+    for raw_am in (amendments or []):
+        key = str(raw_am.get("key") or "").strip()
+        prop_val = str(raw_am.get("proposed_value") if raw_am.get("proposed_value") is not None else "").strip()
+        op = str(raw_am.get("op") or "=").strip()
+        reason = str(raw_am.get("reason") or "").strip()
+        evidence = str(raw_am.get("evidence") or "").strip()
+        if not key or not prop_val:
+            rejected.append(f"Amendment missing key or proposed_value: {raw_am}")
+            continue
+        if not evidence or not anchor_re.search(evidence):
+            rejected.append(
+                f"Amendment for '{key} -> {prop_val}' rejected: missing concrete evidence anchor (file:line, command output, or measurement)"
+            )
+            continue
+        old_entry = inv_map.get(key)
+        old_val = str(raw_am.get("old_value") or (old_entry["value"] if old_entry else "(unlocked)"))
+        inv_map[key] = {"key": key, "op": op, "value": prop_val}
+        applied.append({
+            "key": key,
+            "op": op,
+            "old_value": old_val,
+            "proposed_value": prop_val,
+            "reason": reason or "Empirical adjustment",
+            "evidence": evidence,
+            "author": author_pkg,
+            "affected_packages": list(raw_am.get("affected_packages") or []),
+            "timestamp": now(),
+        })
+
+    if not applied:
+        return {"ok": False, "applied": [], "rejected": rejected, "stale_packages": []}
+
+    new_invs = list(inv_map.values())
+    plan["invariants"] = new_invs
+    ver = int(plan.get("truth_version") or 1) + 1
+    plan["truth_version"] = ver
+
+    tc_rel = plan.get("truth_contract") or ".orch/truth-contract.md"
+    tc_abs = Path(tc_rel) if Path(tc_rel).is_absolute() else (proj / tc_rel)
+    tc_abs.parent.mkdir(parents=True, exist_ok=True)
+    tc_text = tc_abs.read_text(encoding="utf-8", errors="replace") if tc_abs.exists() else f"# Shared Truth Contract\n"
+    inv_comment = f"<!-- INVARIANTS_JSON: {json.dumps(new_invs, ensure_ascii=False)} -->"
+    if re.search(r"<!--\s*INVARIANTS_JSON:\s*\[.*?\]\s*-->", tc_text, re.S):
+        tc_text = re.sub(r"<!--\s*INVARIANTS_JSON:\s*\[.*?\]\s*-->", lambda _: inv_comment, tc_text, flags=re.S)
+    else:
+        tc_text = tc_text.rstrip() + "\n\n" + inv_comment + "\n"
+
+    amend_lines = [f"\n## Truth Amendment v{ver} (by `{author_pkg}` at {now()})"]
+    for am in applied:
+        amend_lines.append(
+            f"- **`{am['key']}`**: `{am['old_value']}` -> **`{am['op']} {am['proposed_value']}`** | Reason: {am['reason']} | Evidence: `{am['evidence']}`"
+        )
+    tc_text = tc_text.rstrip() + "\n" + "\n".join(amend_lines) + "\n"
+    tc_abs.write_text(tc_text, encoding="utf-8")
+
+    # Write dedicated broadcast notice file and mount into every package's context_file
+    notice_abs = pfile.parent / f"truth-amendment-v{ver}.md"
+    notice_abs.write_text(
+        "# MANDATORY TRUTH CONTRACT AMENDMENT (v" + str(ver) + ")\n\n"
+        "The following shared prerequisites/thresholds/interfaces have been formally amended.\n"
+        "All packages MUST obey the updated values below and discard the old values:\n"
+        + "\n".join(amend_lines) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        notice_rel = str(notice_abs.relative_to(proj)).replace("\\", "/")
+    except ValueError:
+        notice_rel = str(notice_abs)
+
+    # Identify affected & stale packages across the plan
+    stale_packages = set(plan.get("stale_packages") or [])
+    affected_all = set()
+    for am in applied:
+        k = am["key"]
+        old_v = am["old_value"]
+        for ap in am["affected_packages"]:
+            affected_all.add(ap)
+        for pkg in plan.get("packages", []):
+            pname = pkg["name"]
+            cfiles = list(pkg.get("context_file") or [])
+            if notice_rel not in cfiles:
+                cfiles.append(notice_rel)
+            pkg["context_file"] = cfiles
+            if pname == author_pkg:
+                continue
+            # Check if package brief or existing outputs mention the amended key
+            bref = pkg.get("brief") or pkg.get("brief_file")
+            bp = (Path(bref) if Path(bref).is_absolute() else (proj / bref)) if bref else None
+            btxt = bp.read_text(encoding="utf-8", errors="replace") if (bp and bp.exists()) else ""
+            mentions_key = (k in btxt) or (pname in am["affected_packages"])
+            out_files = [Path(o) if Path(o).is_absolute() else (proj / o) for o in (pkg.get("outputs") or [])]
+            existing_outs = [o for o in out_files if o.exists() and o.is_file()]
+            for eo in existing_outs:
+                try:
+                    otxt = eo.read_text(encoding="utf-8", errors="replace")
+                    if k in otxt or (old_v and old_v != "(unlocked)" and old_v in otxt):
+                        mentions_key = True
+                        stale_packages.add(pname)
+                except OSError:
+                    pass
+            if mentions_key:
+                affected_all.add(pname)
+                if existing_outs:
+                    stale_packages.add(pname)
+
+    plan["truth_hash"] = compute_truth_hash(tc_abs, new_invs)
+    plan["stale_packages"] = sorted(stale_packages)
+    pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+    # Append to amendments.jsonl ledger
+    amend_log = pfile.parent / "amendments.jsonl"
+    with open(amend_log, "a", encoding="utf-8") as f:
+        for am in applied:
+            f.write(json.dumps({"truth_version": ver, "truth_hash": plan["truth_hash"], **am,
+                                "affected_packages": sorted(affected_all),
+                                "stale_packages": sorted(stale_packages)}, ensure_ascii=False) + "\n")
+
+    return {
+        "ok": len(rejected) == 0,
+        "truth_version": ver,
+        "truth_hash": plan["truth_hash"],
+        "notice_file": notice_rel,
+        "applied": applied,
+        "rejected": rejected,
+        "affected_packages": sorted(affected_all),
+        "stale_packages": sorted(stale_packages),
+    }
+
+
+
 def settle_plan(plan, project_dir=None):
     """Settle a work plan into topological parallel waves (inspired by Anatomy's A.settle).
     - Wires top-level `truth_contract` into every package's `context_file` (Truth First).
@@ -821,8 +1203,15 @@ def settle_plan(plan, project_dir=None):
     hw = probe_hardware()
     plan_wip = (plan.get("wip") if isinstance(plan, dict) else None) or hw["recommended_wip"]
     active_wip = min(int(plan_wip), hw["recommended_wip"])
+    invariants = extract_invariants(plan, proj) if isinstance(plan, dict) else []
+    tc_abs = (Path(truth_contract) if Path(truth_contract).is_absolute() else (proj / truth_contract)) if truth_contract else None
+    live_hash = compute_truth_hash(tc_abs, invariants) if (tc_abs or invariants) else None
     return {
         "truth_contract": truth_contract,
+        "truth_version": int(plan.get("truth_version") or 1) if isinstance(plan, dict) else 1,
+        "truth_hash": live_hash,
+        "invariants": invariants,
+        "stale_packages": list(plan.get("stale_packages") or []) if isinstance(plan, dict) else [],
         "size_tier": size_tier_of_plan(len(pkgs)),
         "wip": active_wip,
         "hardware": hw,
@@ -841,7 +1230,7 @@ def audit_plan(plan, project_dir=None):
       4. support: 0 hanging intermediate packages whose work is never consumed downstream
       5. stand_in_briefs: 0 missing or hollow (<40 char / TODO) briefs
       6. skill_mounts: 0 unresolved parent/sandbox skills
-      7. truth_contract: 0 missing truth contract files
+      7. truth_contract & keyhole interlocks: 0 missing/tampered truth contracts, 0 worker write-locks on truth_contract, 0 un-resynced stale packages, 0 invariant violations
     """
     proj = Path(project_dir or ".").resolve()
     settled = settle_plan(plan, project_dir=proj)
@@ -855,14 +1244,33 @@ def audit_plan(plan, project_dir=None):
     stand_in_briefs = []
     skill_mounts = []
     truth_issues = []
+    interlock_issues = []
 
     tc = settled.get("truth_contract")
+    tc_norm = str(tc).replace("\\", "/") if tc else None
     if tc:
         tc_path = Path(tc) if Path(tc).is_absolute() else (proj / tc)
         if not tc_path.exists():
             truth_issues.append(f"truth_contract '{tc}' does not exist on disk (write the shared ground-truth model first)")
         elif tc_path.stat().st_size < 20:
             truth_issues.append(f"truth_contract '{tc}' is hollow (<20 bytes)")
+        if isinstance(plan, dict) and plan.get("truth_hash") and settled.get("truth_hash"):
+            if plan["truth_hash"] != settled["truth_hash"]:
+                interlock_issues.append(
+                    f"TRUTH_HASH_MISMATCH: plan.json locked truth_hash={plan['truth_hash']} but live truth_contract/invariants hash to {settled['truth_hash']} (use `anatomy.py amend` to update truth & propagate changes)"
+                )
+
+    for sp in settled.get("stale_packages") or []:
+        interlock_issues.append(
+            f"STALE_PACKAGE_NEEDS_RESYNC: '{sp}' used an old parameter value invalidated by a Truth Amendment (re-run or update '{sp}' and clear stale_packages)"
+        )
+
+    # Check if any existing outputs already violate locked invariants
+    all_declared_outputs = [o for p in pkgs for o in (p.get("outputs") or [])]
+    if settled.get("invariants") and all_declared_outputs:
+        existing_outs = [o for o in all_declared_outputs if (Path(o) if Path(o).is_absolute() else (proj / o)).exists()]
+        if existing_outs:
+            interlock_issues.extend(check_invariant_drift(settled["invariants"], existing_outs, project_dir=proj))
 
     # Map every output path to the wave in which it is produced
     output_wave = {}
@@ -892,6 +1300,13 @@ def audit_plan(plan, project_dir=None):
     max_wave = len(waves) - 1
     for p in pkgs:
         name = p["name"]
+        # Keyhole lock: workers must never have write permission over the shared truth_contract
+        if tc_norm:
+            for mw in p.get("may_write", []):
+                if _scope_overlaps(mw, tc_norm):
+                    interlock_issues.append(
+                        f"{name}: may_write '{mw}' overlaps shared truth_contract '{tc_norm}' (workers cannot unilaterally mutate Truth Contract; use `truth_amendments`)"
+                    )
         # 2. Terminals: depends_on validity, write scope presence, context_file mounts
         for dep in p.get("depends_on", []):
             if dep not in by_name:
@@ -942,7 +1357,8 @@ def audit_plan(plan, project_dir=None):
 
     failures_total = (
         len(clearance) + len(settled["cycles"]) + len(terminals) +
-        len(support) + len(stand_in_briefs) + len(skill_mounts) + len(truth_issues)
+        len(support) + len(stand_in_briefs) + len(skill_mounts) +
+        len(truth_issues) + len(interlock_issues)
     )
     return {
         "ok": failures_total == 0,
@@ -952,6 +1368,9 @@ def audit_plan(plan, project_dir=None):
         "package_count": len(pkgs),
         "wave_count": len(waves),
         "writer_count": sum(1 for p in pkgs if p.get("mode") == "write"),
+        "invariant_count": len(settled.get("invariants") or []),
+        "truth_version": settled.get("truth_version", 1),
+        "truth_hash": settled.get("truth_hash"),
         "wip": settled["wip"],
         "hardware": settled["hardware"]["summary"],
         "clearance": clearance,
@@ -961,6 +1380,7 @@ def audit_plan(plan, project_dir=None):
         "stand_in_briefs": stand_in_briefs,
         "skill_mounts": skill_mounts,
         "truth_contract": truth_issues,
+        "interlocks": interlock_issues,
         "settled": settled,
     }
 
@@ -976,6 +1396,7 @@ def format_anatomy_report(audit_res):
         ("stand-in briefs (work order substance)", audit_res["stand_in_briefs"]),
         ("skill mounts (parent/sandbox skill paths)", audit_res["skill_mounts"]),
         ("truth contract (single source of truth)", audit_res["truth_contract"]),
+        ("interlocks (invariants, thresholds & truth lock)", audit_res.get("interlocks") or []),
     ]
     for label, probs in checks:
         lines.append(f"{label}: {len(probs)} problems")
@@ -989,9 +1410,13 @@ def format_anatomy_report(audit_res):
             for p in w_pkgs
         )
         lines.append(f"wave {w_idx}: {p_desc}")
+    inv_cnt = audit_res.get("invariant_count", 0)
+    thash = audit_res.get("truth_hash") or "none"
+    tver = audit_res.get("truth_version", 1)
     lines.append(
         f"anatomy audit · {audit_res['package_count']} packages · {audit_res['wave_count']} waves · "
-        f"{audit_res['writer_count']} writers · size {audit_res['size_tier']} · wip {audit_res['wip']}"
+        f"{audit_res['writer_count']} writers · {inv_cnt} invariants (v{tver} #{thash[:8]}) · "
+        f"size {audit_res['size_tier']} · wip {audit_res['wip']}"
     )
     lines.append(
         f"audit failed: {audit_res['failure_count']} problem(s)" if not audit_res["ok"] else "audit passed"
@@ -999,12 +1424,18 @@ def format_anatomy_report(audit_res):
     return "\n".join(lines)
 
 
-def audit_batch_junctions(settled_pkgs, results_by_name, project_dir=None):
-    """Post-flight 4x Junction & Line-End Check across completed packages in a batch.
-    Checks that every declared output exists on disk, and surfaces any unresolved
-    assumptions_challenged, open_questions, or evidence_warnings at package seams."""
+def audit_batch_junctions(settled_pkgs, results_by_name, project_dir=None, plan=None):
+    """Post-flight 4x Junction, Invariant Keyhole & Cross-Package Conflict Check across completed packages.
+    Checks:
+      - Every declared output exists on disk (`missing_outputs`)
+      - No deliverable/modified file violates locked user prerequisites or thresholds (`invariant_violations`)
+      - No two packages silently define conflicting values for shared constants/parameters (`cross_package_conflicts`)
+      - Surfaces `truth_amendments`, `assumptions_challenged`, `open_questions`, and `evidence_warnings`."""
     proj = Path(project_dir or ".").resolve()
+    invariants = extract_invariants(plan, proj) if isinstance(plan, dict) else []
     missing_outputs = []
+    invariant_violations = []
+    truth_amendments = []
     challenged = []
     floating_questions = []
     ev_warnings = []
@@ -1013,26 +1444,50 @@ def audit_batch_junctions(settled_pkgs, results_by_name, project_dir=None):
     for p in settled_pkgs:
         name = p["name"]
         meta = results_by_name.get(name) or {}
+        pkg_files = []
         for out_p in p.get("outputs", []):
             fp = Path(out_p) if Path(out_p).is_absolute() else (proj / out_p)
             if not fp.exists():
                 missing_outputs.append(f"{name}: declared output '{out_p}' was not created on disk")
+            else:
+                pkg_files.append(out_p)
+        for ch_f in (meta.get("changed") or []):
+            if ch_f not in pkg_files:
+                pkg_files.append(ch_f)
+        if invariants and pkg_files:
+            for v in check_invariant_drift(invariants, pkg_files, project_dir=proj):
+                invariant_violations.append(f"{name}: {v}")
         for ew in (meta.get("evidence_warnings") or []):
             ev_warnings.append(f"{name}: {ew}")
         run_dir = meta.get("run_dir")
         if run_dir and (Path(run_dir) / "result.json").exists():
             try:
-                robj = json.loads((Path(run_dir) / "result.json").read_text(encoding="utf-8"))
+                robj = json.loads((Path(run_dir) / "result.json").read_text(encoding="utf-8-sig"))
                 for ac in (robj.get("assumptions_challenged") or []):
                     challenged.append(f"{name} (wave {p.get('wave', 0)}): {ac}")
                 for oq in (robj.get("open_questions") or []):
-                    # If raised in the final wave, it remains open for the manager
                     floating_questions.append(f"{name} (wave {p.get('wave', 0)}): {oq}")
+                for tam in (robj.get("truth_amendments") or []):
+                    if isinstance(tam, dict):
+                        truth_amendments.append({"author": name, "wave": p.get("wave", 0), **tam})
             except (OSError, ValueError):
                 pass
+
+    cross_conflicts = detect_cross_package_conflicts(
+        settled_pkgs, results_by_name, project_dir=proj, invariants=invariants
+    )
+
     return {
-        "ok": len(missing_outputs) == 0 and len(ev_warnings) == 0,
+        "ok": (
+            len(missing_outputs) == 0
+            and len(ev_warnings) == 0
+            and len(invariant_violations) == 0
+            and len(cross_conflicts) == 0
+        ),
         "missing_outputs": missing_outputs,
+        "invariant_violations": invariant_violations,
+        "cross_package_conflicts": cross_conflicts,
+        "truth_amendments": truth_amendments,
         "assumptions_challenged": challenged,
         "open_questions": floating_questions,
         "evidence_warnings": ev_warnings,

@@ -26,11 +26,12 @@
     - **Rule 1 — Share Parent Skill Paths First (Never Re-Install What You Can Read):** `route.py --list-skills` scans all parent/host skill directories (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/config/skills`, `plugins/*/skills`, `builtin/skills`). When a parent agent has a matching skill, pass `--skill <name>` in `agent_run.py run`/`batch` (or pass the `SKILL.md` path directly in a native sub-agent's brief). `agent_run.py` automatically injects the `SKILL.md` path and mounts the skill directory (`--add-dir`) so child agents read it directly without installing anything.
     - **Rule 2 — Ephemeral Skill Sandbox (`~/.agent-orchestration/sandbox-skills/`):** Only when NO local parent skill covers the task, run `skill_sandbox.py search <query>` to search curated high-trust registries (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, `obra/superpowers`, or verified GitHub repos with `>= 50` stars). **Always ask the user for approval first**, then run `skill_sandbox.py install <repo> [--subpath ...] --approved-by-user`. The skill is security-scanned and stored strictly inside `agent-orchestration`'s own ephemeral sandbox memory (never touching system/global folders) and can be deleted anytime via `skill_sandbox.py remove <name>` or `skill_sandbox.py purge`.
 
-12. **Orchestration Anatomy Engine — Size Gate, Truth First, Settle & Audit to Zero, 4x Junction Check (`anatomy.py` + `batch --audit`):**
+12. **Orchestration Anatomy Engine & Keyhole Interlocks — Size Gate, Truth Lock, Settle & Audit to Zero, Change-Ripple Amend, 4x Junction Check (`anatomy.py` + `batch --audit`):**
     - **Size It First (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Name the scale up front. If `>8` packages (`Epic`), stop and propose a `Hero` slice (`<=8` packages) first unless the user explicitly approves the Epic.
-    - **Truth First (`truth_contract`):** Put shared invariants, interfaces, and constants in one shared Truth Contract file (`.orch/truth-contract.md`); `settle_plan()` automatically mounts it into every package's `context_file` so parallel workers never drift.
-    - **Settle & Audit to Zero (`anatomy.py init|settle|audit` & `agent_run.py batch --audit`):** Automatically solves topological execution waves (`Wave 0, Wave 1, ...`), wires upstream `outputs` + `result.json` into downstream `context_file` mounts between waves, and proves **0 structural problems** before execution (`clearance: 0 wave write overlaps`, `cycles: 0`, `terminals: 0 dangling deps/writes/inputs`, `support: 0 hanging packages`, `stand_in_briefs: 0 hollow briefs`, `skill_mounts: 0 missing skills`).
-    - **1x Macro & 4x Junction Close-Ups (`anatomy.py inspect`):** Post-flight check across every producer→consumer seam verifying all declared `outputs` exist on disk and surfacing `assumptions_challenged`, `open_questions`, and `evidence_warnings`.
+    - **Truth Lock & Keyhole Invariants (`truth_contract` + `--invariant` + `truth_hash`):** Lock user prerequisites and thresholds (`KEY=VAL`, `KEY<=VAL`, `KEY>=VAL`, `must:PAT`, `forbid:PAT`) in `.orch/truth-contract.md` and `plan.json` with a SHA-256 `truth_hash`. Workers cannot write to `truth_contract` directly.
+    - **Settle & Audit to Zero (`anatomy.py init|settle|audit` & `agent_run.py batch --audit`):** Solves topological execution waves (`Wave 0, Wave 1, ...`), wires upstream `outputs` + `result.json` into downstream `context_file` mounts, and proves **0 problems** across 8 checks (`clearance`, `cycles`, `terminals`, `support`, `stand_in_briefs`, `skill_mounts`, `truth_contract`, `interlocks`).
+    - **Change-Ripple Protocol & Anti-Silent-Conflict (`anatomy.py amend` & `batch --auto-amend`):** Prevents "1 worker changes a parameter while others stay silent (`nín thin`)". After each wave, `check_invariant_drift()` and `detect_cross_package_conflicts()` halt the pipeline if any worker violates a locked threshold (`INVARIANT_DRIFT` / `THRESHOLD_VIOLATION`) or defines conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). Formal changes require `truth_amendments` with proof (`evidence`), triggering `anatomy.py amend` to increment `truth_version`, mount `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flag already-run packages with the old value as `stale_packages`.
+    - **1x Macro & 4x Junction Close-Ups (`anatomy.py inspect`):** Post-flight check across every seam verifying `missing_outputs`, `invariant_violations`, `cross_package_conflicts`, `truth_amendments`, `assumptions_challenged`, `open_questions`, and `evidence_warnings`.
 
 ---
 
@@ -57,13 +58,16 @@ python <skill>/scripts/route.py --task-type design --manager agy --same-model
 python <skill>/scripts/route.py --task-type review --builder agy --manager agy --same-model
 python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
-# 5. Orchestration Anatomy: Init Truth + Wave DAG, Audit to Zero, Multi-Wave Batch & 4x Junction Check
+# 5. Orchestration Anatomy: Init Truth + Keyhole Invariants, Audit to Zero, Amend Ripple & 4x Junction Check
 python <skill>/scripts/anatomy.py init --goal "Build & verify auth" \
-       --pkg "contract:guided:::src/types.py::.orch/auth-schema.md" \
+       --invariant "PORT=8080" --invariant "MAX_LATENCY_MS<=200" \
+       --pkg "contract:guided::src/types.py::.orch/auth-schema.md" \
        --pkg "impl:guided:contract:src/auth/::src/auth/handler.py" \
        --pkg "verify:exploratory:impl" --out .orch/plan.json
 python <skill>/scripts/anatomy.py audit .orch/plan.json
-python <skill>/scripts/agent_run.py batch .orch/plan.json --audit
+python <skill>/scripts/agent_run.py batch .orch/plan.json [--audit] [--auto-amend]
+python <skill>/scripts/anatomy.py amend .orch/plan.json --set "MAX_LATENCY_MS<=250" \
+       --reason "Measured p99 under cold start" --evidence "bench.py:42 -> 235ms"
 python <skill>/scripts/anatomy.py inspect .orch/plan.json
 
 # 6. Ephemeral Skill Sandbox (ONLY when parent agent lacks a needed skill; MUST ask user before install)

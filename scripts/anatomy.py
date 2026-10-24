@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""anatomy.py — Orchestration Anatomy Engine (Size Gate, Truth Contract, Parts BOM, Settle & Audit to Zero, 4x Junction Check)."""
+"""anatomy.py — Orchestration Anatomy Engine (Size Gate, Truth Interlock, Parts BOM, Settle & Audit to Zero, Change-Ripple Amend & 4x Junction Check)."""
 from __future__ import annotations
 
 import argparse
@@ -12,13 +12,7 @@ import ao_common as ao  # noqa: E402
 
 
 def _parse_pkg_spec(spec: str) -> dict:
-    """Parse --pkg name[:brief_mode[:deps[:may_write[:skills[:outputs]]]]].
-
-    Format examples:
-      schema:guided::src/schema.py::.orch/schema-summary.md
-      api:tight:schema:src/api/:fastapi:.orch/api-routes.json
-      verify:exploratory:schema,api
-    """
+    """Parse --pkg name[:brief_mode[:deps[:may_write[:skills[:outputs]]]]]."""
     parts = spec.split(":")
     name = (parts[0] if len(parts) > 0 else "").strip()
     if not name:
@@ -41,20 +35,33 @@ def _parse_pkg_spec(spec: str) -> dict:
     }
 
 
-def _scaffold_truth_contract(path: Path, goal: str, pkgs: list[dict]) -> None:
+def _scaffold_truth_contract(path: Path, goal: str, pkgs: list[dict], invariants: list[dict]) -> None:
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"# Shared Truth Contract — {goal}",
         "",
-        "## 1. System Goal & Non-Negotiable Invariants",
+        "## 1. System Goal & Non-Negotiable Invariants (Keyhole Interlock)",
         f"- **Primary Objective**: {goal}",
-        "- Every worker package MUST read and obey all names, schemas, paths, and constraints declared in this contract.",
-        "- Do NOT invent undocumented cross-package interfaces; if a seam is ambiguous, surface it in `open_questions` or `assumptions_challenged`.",
+        "- Every worker package MUST read and obey all names, schemas, thresholds, and constraints declared in this contract.",
+        "- **NO SILENT DRIFT**: Never unilaterally change a shared constant, threshold, or interface in your files while other packages remain on the old value. If empirical evidence proves a locked value must change, emit a `truth_amendments` entry with concrete `file:line` / command proof so the orchestrator updates the Truth Contract and re-syncs all affected packages.",
         "",
-        "## 2. Parts Bill of Materials (BOM) & Seam Contracts",
+        "## 2. Locked User Prerequisites & Threshold Keyholes",
     ]
+    if invariants:
+        for inv in invariants:
+            if inv["op"] in ("must", "forbid"):
+                lines.append(f"- **`{inv['op'].upper()}`**: `{inv['value']}`")
+            else:
+                lines.append(f"- **`{inv['key']}`** `{inv['op']}` `{inv['value']}`")
+    else:
+        lines.append("- *(No scalar/pattern invariants locked yet; pass `--invariant KEY=VAL` or `KEY<=VAL` to lock thresholds)*")
+    lines.extend([
+        f"<!-- INVARIANTS_JSON: {json.dumps(invariants, ensure_ascii=False)} -->",
+        "",
+        "## 3. Parts Bill of Materials (BOM) & Seam Contracts",
+    ])
     for idx, p in enumerate(pkgs, 1):
         deps = ", ".join(p.get("depends_on") or []) or "(root / Wave 0)"
         writes = ", ".join(p.get("may_write") or []) or "(read-only)"
@@ -64,8 +71,8 @@ def _scaffold_truth_contract(path: Path, goal: str, pkgs: list[dict]) -> None:
         )
     lines.extend([
         "",
-        "## 3. Shared Data Shapes & Constants",
-        "- Return the standard JSON result envelope (`status`, `summary`, `confidence`, `evidence`, `deliverables`, `assumptions_challenged`, `open_questions`, `risks`, `next_action`).",
+        "## 4. Shared Data Shapes & Result Envelope",
+        "- Return the standard JSON result envelope (`status`, `summary`, `confidence`, `evidence`, `deliverables`, `assumptions_challenged`, `open_questions`, `truth_amendments`, `risks`, `next_action`).",
     ])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -75,6 +82,7 @@ def _scaffold_pkg_brief(
     goal: str,
     truth_rel: str,
     pkg: dict,
+    invariants: list[dict],
 ) -> None:
     if path.exists():
         return
@@ -83,12 +91,17 @@ def _scaffold_pkg_brief(
     deps = ", ".join(pkg.get("depends_on") or []) or "None (Wave 0 root package)"
     outs = ", ".join(pkg.get("outputs") or []) or f"Structured result envelope (.orch/{pkg['name']}/result.json)"
     skills = ", ".join(pkg.get("skill") or []) or "None"
+    inv_summary = ", ".join(
+        f"{x['op']}:{x['value']}" if x["op"] in ("must", "forbid") else f"{x['key']}{x['op']}{x['value']}"
+        for x in (invariants or [])
+    ) or "See Truth Contract"
     content = "\n".join([
         f"# Work Package Brief — `{pkg['name']}` ({pkg['brief_mode'].upper()} Brief / {pkg['mode'].upper()} Access)",
         "",
-        "## Shared Truth & Upstream Dependencies",
+        "## Shared Truth & Keyhole Invariants",
         f"- **Overall Goal**: {goal}",
-        f"- **Shared Truth Contract**: `{truth_rel}` (mounted in `--context-file`; obey all shared invariants and interfaces)",
+        f"- **Shared Truth Contract**: `{truth_rel}` (mounted in `--context-file`; write-locked)",
+        f"- **Locked Prerequisites & Thresholds**: `{inv_summary}`",
         f"- **Upstream Dependencies (`depends_on`)**: {deps}",
         f"- **Delegated Specialized Skills (`--skill`)**: {skills}",
         "",
@@ -98,7 +111,7 @@ def _scaffold_pkg_brief(
         "",
         "## Concrete Assignment & Acceptance Criteria",
         f"1. Execute work package `{pkg['name']}` to advance: {goal}.",
-        "2. Verify compatibility at every seam with upstream inputs and the Shared Truth Contract.",
+        "2. Strictly obey all locked prerequisites and thresholds in the Shared Truth Contract. Never silently change a shared parameter/interface; if a threshold is infeasible, report it in `truth_amendments` with empirical `evidence`.",
         "3. Cite exact `file:line` anchors or command outputs in `evidence`, and report any cross-seam mismatch in `assumptions_challenged`.",
     ])
     path.write_text(content + "\n", encoding="utf-8")
@@ -111,6 +124,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     orch_dir.mkdir(parents=True, exist_ok=True)
 
     raw_pkgs = [_parse_pkg_spec(s) for s in a.pkg]
+    invariants = [ao.parse_invariant_spec(s) for s in (a.invariant or [])]
     tier = ao.size_tier_of_plan(len(raw_pkgs))
     if tier == "epic" and not a.allow_epic:
         sys.stderr.write(
@@ -127,12 +141,12 @@ def cmd_init(a: argparse.Namespace) -> int:
         except ValueError:
             truth_rel = str(orch_dir / "truth-contract.md")
     truth_abs = Path(truth_rel) if Path(truth_rel).is_absolute() else (proj / truth_rel)
-    _scaffold_truth_contract(truth_abs, a.goal, raw_pkgs)
+    _scaffold_truth_contract(truth_abs, a.goal, raw_pkgs, invariants)
 
     plan_pkgs = []
     for p in raw_pkgs:
         brief_abs = orch_dir / f"brief-{p['name']}.md"
-        _scaffold_pkg_brief(brief_abs, a.goal, truth_rel, p)
+        _scaffold_pkg_brief(brief_abs, a.goal, truth_rel, p, invariants)
         try:
             brief_rel = str(brief_abs.relative_to(proj)).replace("\\", "/")
         except ValueError:
@@ -157,10 +171,14 @@ def cmd_init(a: argparse.Namespace) -> int:
     plan: dict = {
         "goal": a.goal,
         "truth_contract": truth_rel,
+        "truth_version": 1,
+        "invariants": invariants,
+        "stale_packages": [],
         "epic_approved": bool(a.allow_epic),
         "packages": plan_pkgs,
     }
     settled = ao.settle_plan(plan, proj)
+    plan["truth_hash"] = settled["truth_hash"]
     plan["size_tier"] = settled["size_tier"]
     plan["waves"] = [[p["name"] for p in w] for w in settled["waves"]]
     plan["packages"] = [
@@ -197,6 +215,7 @@ def cmd_settle(a: argparse.Namespace) -> int:
     plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
     settled = ao.settle_plan(plan, proj)
     if a.write:
+        plan["truth_hash"] = settled["truth_hash"]
         plan["size_tier"] = settled["size_tier"]
         plan["waves"] = [[p["name"] for p in w] for w in settled["waves"]]
         plan["packages"] = settled["packages"]
@@ -204,7 +223,10 @@ def cmd_settle(a: argparse.Namespace) -> int:
     if a.json:
         print(json.dumps(settled, indent=2))
     else:
-        print(f"Settled {len(settled['packages'])} packages ({settled['size_tier']}) into {len(settled['waves'])} waves (wip={settled['wip']}):")
+        print(
+            f"Settled {len(settled['packages'])} packages ({settled['size_tier']}) into {len(settled['waves'])} waves "
+            f"(wip={settled['wip']}, truth v{settled['truth_version']} #{str(settled['truth_hash'])[:8]}):"
+        )
         for w_idx, w_pkgs in enumerate(settled["waves"]):
             print(f"  Wave {w_idx}: {', '.join(p['name'] for p in w_pkgs)}")
         if settled["cycles"]:
@@ -224,6 +246,63 @@ def cmd_audit(a: argparse.Namespace) -> int:
     return 0 if audit_res["ok"] else 1
 
 
+def cmd_amend(a: argparse.Namespace) -> int:
+    """Formally amend locked prerequisites/thresholds in the Truth Contract, broadcast a mandatory
+    notice into all packages' context_file, and mark already-executed affected packages as stale."""
+    proj = Path(a.project_dir).resolve()
+    pfile = Path(a.plan_file).resolve()
+    plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
+
+    # Allow clearing stale package flags once resynced
+    if a.clear_stale:
+        to_clear = {x.strip() for s in a.clear_stale for x in s.split(",") if x.strip()}
+        cur_stale = [p for p in (plan.get("stale_packages") or []) if p not in to_clear]
+        plan["stale_packages"] = cur_stale
+        pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        if not a.set:
+            if a.json:
+                print(json.dumps({"ok": True, "stale_packages": cur_stale}, indent=2))
+            else:
+                print(f"Cleared stale status for {sorted(to_clear)}. Remaining stale_packages: {cur_stale}")
+            return 0
+
+    if not a.set:
+        sys.stderr.write("error: pass --set KEY=VAL (or KEY<=VAL) or --clear-stale PKG\n")
+        return 2
+
+    affected = [x.strip() for s in (a.affect or []) for x in s.split(",") if x.strip()]
+    amendments = []
+    for spec in a.set:
+        parsed = ao.parse_invariant_spec(spec)
+        amendments.append({
+            "key": parsed["key"],
+            "op": parsed["op"],
+            "proposed_value": parsed["value"],
+            "reason": a.reason or "Updated shared threshold/prerequisite via anatomy amend",
+            "evidence": a.evidence,
+            "affected_packages": affected,
+        })
+
+    res = ao.amend_truth_contract(pfile, amendments, project_dir=proj, author_pkg=a.by or "manager")
+    if a.json:
+        print(json.dumps(res, indent=2))
+    else:
+        if res["rejected"]:
+            for r in res["rejected"]:
+                print(f"REJECTED: {r}")
+        if res["applied"]:
+            print(f"Truth Contract amended -> v{res['truth_version']} (hash #{res['truth_hash'][:8]})")
+            print(f"Broadcast notice mounted into all packages: {res['notice_file']}")
+            if res["affected_packages"]:
+                print(f"Affected packages notified: {', '.join(res['affected_packages'])}")
+            if res["stale_packages"]:
+                print(
+                    f"RIPPLE INVALIDATION (STALE PACKAGES): {', '.join(res['stale_packages'])} "
+                    "already produced outputs with the old value -> re-run/sync them and run `anatomy.py amend --clear-stale <pkg>`"
+                )
+    return 0 if res["ok"] else 1
+
+
 def cmd_inspect(a: argparse.Namespace) -> int:
     proj = Path(a.project_dir).resolve()
     pfile = Path(a.plan_file).resolve()
@@ -241,21 +320,30 @@ def cmd_inspect(a: argparse.Namespace) -> int:
                 results_by_name[p["name"]] = {"run_dir": str(pdir)}
         elif (pdir / "result.json").exists():
             results_by_name[p["name"]] = {"run_dir": str(pdir)}
-    junctions = ao.audit_batch_junctions(settled["packages"], results_by_name, proj)
+    junctions = ao.audit_batch_junctions(settled["packages"], results_by_name, proj, plan=plan)
     if a.json:
         print(json.dumps(junctions, indent=2))
     else:
-        print("=== 4x Junction & Seam Inspection ===")
-        print(f"missing_outputs   : {len(junctions['missing_outputs'])}")
+        print("=== 4x Junction, Keyhole Invariant & Cross-Package Conflict Inspection ===")
+        print(f"missing_outputs         : {len(junctions['missing_outputs'])}")
         for m in junctions["missing_outputs"]:
             print(f"  ! {m}")
-        print(f"challenged_seams  : {len(junctions['assumptions_challenged'])}")
+        print(f"invariant_violations    : {len(junctions['invariant_violations'])}")
+        for v in junctions["invariant_violations"]:
+            print(f"  X {v}")
+        print(f"cross_package_conflicts : {len(junctions['cross_package_conflicts'])}")
+        for c in junctions["cross_package_conflicts"]:
+            print(f"  # {c}")
+        print(f"truth_amendments        : {len(junctions['truth_amendments'])}")
+        for am in junctions["truth_amendments"]:
+            print(f"  @ {am.get('author')}: {am.get('key')} -> {am.get('proposed_value')} ({am.get('reason')})")
+        print(f"challenged_seams        : {len(junctions['assumptions_challenged'])}")
         for c in junctions["assumptions_challenged"]:
             print(f"  ~ {c}")
-        print(f"open_questions    : {len(junctions['open_questions'])}")
+        print(f"open_questions          : {len(junctions['open_questions'])}")
         for q in junctions["open_questions"]:
             print(f"  ? {q}")
-        print(f"evidence_warnings : {len(junctions['evidence_warnings'])}")
+        print(f"evidence_warnings       : {len(junctions['evidence_warnings'])}")
         for w in junctions["evidence_warnings"]:
             print(f"  * {w}")
         print("junction audit passed" if junctions["ok"] else "junction audit FAILED")
@@ -264,17 +352,23 @@ def cmd_inspect(a: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Orchestration Anatomy Engine: Size Gate, Truth Contract, Settle Wave DAG, Audit to Zero, and 4x Junction Inspection."
+        description="Orchestration Anatomy Engine: Size Gate, Truth Interlock, Settle Wave DAG, Audit to Zero, Change-Ripple Amend & 4x Junction Inspection."
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    pi = sub.add_parser("init", help="Scaffold Shared Truth Contract, non-hollow briefs, and settled plan.json, then audit to zero")
+    pi = sub.add_parser("init", help="Scaffold Shared Truth Contract, locked invariants, non-hollow briefs, and settled plan.json, then audit to zero")
     pi.add_argument("--goal", required=True, help="Primary system goal for the anatomy plan")
     pi.add_argument(
         "--pkg",
         action="append",
         required=True,
         help="Package spec: name[:brief_mode[:deps_csv[:may_write_csv[:skills_csv[:outputs_csv]]]]]",
+    )
+    pi.add_argument(
+        "--invariant",
+        action="append",
+        default=[],
+        help="Lock user prerequisite or threshold keyhole: KEY=VAL, KEY<=VAL, KEY>=VAL, must:PATTERN, or forbid:PATTERN (repeatable)",
     )
     pi.add_argument("--truth-contract", default=None, help="Relative path to shared truth contract markdown")
     pi.add_argument("--out", default=".orch/plan.json", help="Output plan.json path (default: .orch/plan.json)")
@@ -290,12 +384,23 @@ def main() -> int:
     ps.add_argument("--write", action="store_true", help="Write settled waves and context wiring back to plan_file")
     ps.add_argument("--json", action="store_true")
 
-    pa = sub.add_parser("audit", help="Run zero-defect structural pre-flight audit on plan.json")
+    pa = sub.add_parser("audit", help="Run zero-defect structural & keyhole interlock pre-flight audit on plan.json")
     pa.add_argument("plan_file", help="Path to plan.json")
     pa.add_argument("--project-dir", default=".")
     pa.add_argument("--json", action="store_true")
 
-    pj = sub.add_parser("inspect", help="Run 4x post-flight junction & seam check across package outputs and result envelopes")
+    pm = sub.add_parser("amend", help="Formally amend a locked prerequisite/threshold with evidence, broadcast notice to all packages, and flag stale packages")
+    pm.add_argument("plan_file", help="Path to plan.json")
+    pm.add_argument("--set", action="append", default=[], help="Amendment spec: KEY=NEW_VAL, KEY<=NEW_VAL, etc. (repeatable)")
+    pm.add_argument("--reason", default="", help="Why the locked value must change")
+    pm.add_argument("--evidence", default="", help="Verifiable proof (file:line or command -> output) justifying the change")
+    pm.add_argument("--by", default="manager", help="Package or role proposing the amendment")
+    pm.add_argument("--affect", action="append", default=[], help="Explicit comma-separated list of affected package names")
+    pm.add_argument("--clear-stale", action="append", default=[], help="Comma-separated package names that have been re-synced and are no longer stale")
+    pm.add_argument("--project-dir", default=".")
+    pm.add_argument("--json", action="store_true")
+
+    pj = sub.add_parser("inspect", help="Run 4x post-flight junction, invariant drift & cross-package silent conflict check")
     pj.add_argument("plan_file", help="Path to plan.json")
     pj.add_argument("--results-dir", default=None, help="Directory containing <pkg>/result.json (defaults to plan_file parent)")
     pj.add_argument("--project-dir", default=".")
@@ -308,6 +413,8 @@ def main() -> int:
         return cmd_settle(args)
     if args.cmd == "audit":
         return cmd_audit(args)
+    if args.cmd == "amend":
+        return cmd_amend(args)
     if args.cmd == "inspect":
         return cmd_inspect(args)
     return 1
