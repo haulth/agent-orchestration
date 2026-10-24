@@ -1,0 +1,97 @@
+{
+  "updated": "2026-10-24",
+  "note": "Source of truth for tiers and task routing. references/gates-and-routing.md mirrors it. route.py reads it; discover.py never edits it (new models it finds go to ~/.agent-orchestration/candidates.json until a person promotes them here).",
+  "tier_order": ["fast", "standard", "frontier", "frontier_max"],
+  "risk_floor": {"low": "fast", "med": "standard", "high": "frontier"},
+  "vendors": {
+    "codex": {
+      "company": "openai",
+      "cognitive_strengths": ["surgical-logic", "deep-debugging", "methodological-audit", "refactoring"],
+      "tiers": {
+        "fast": {"model": "gpt-5.6-luna", "effort": "low", "family": "openai"},
+        "standard": {"model": "gpt-5.6-sol", "effort": "medium", "family": "openai"},
+        "frontier": {"model": "gpt-6-astra", "effort": "high", "family": "openai"},
+        "frontier_max": {"model": "gpt-6-astra", "effort": "xhigh", "family": "openai"}
+      },
+      "fallback_model": "gpt-6-astra",
+      "overhead_tokens": 12500,
+      "resume_overhead_tokens": 1500,
+      "notes": [
+        "Provider 9router: accepted models can differ from local cache; on model_or_config failure use fallback_model once.",
+        "gpt-5.6-luna/low was confirmed by a real call on 2026-09-25 (14.2k tokens). gpt-6-astra is the config default. gpt-5.6-sol/medium was confirmed by a real 871 s, 73k-token code review on 2026-09-26.",
+        "A sandboxed Codex worker cannot call agy or claude (network blocked); the manager chains vendors."
+      ]
+    },
+    "agy": {
+      "company": "google",
+      "cognitive_strengths": ["broad-context-synthesis", "multi-file-exploration", "cross-family-hosting", "multimodal-and-ui"],
+      "tiers": {
+        "fast": {"model": "gemini-3.8-flash-low", "family": "google"},
+        "standard": {"model": "gemini-4-argon-medium", "family": "google"},
+        "frontier": {"model": "gemini-4-argon-high", "family": "google"},
+        "frontier_max": {"model": "claude-opus-5-5-high", "family": "anthropic"}
+      },
+      "fallback_model": "gemini-3.8-flash-high",
+      "overhead_tokens": 19500,
+      "resume_overhead_tokens": null,
+      "notes": [
+        "Updated 2026-10-24 (agy 1.4.4): gemini-3.1-pro-* was replaced by gemini-4-argon-{low,medium,high} and claude-{sonnet,opus}-5-5-{low,medium,high}.",
+        "Effort is baked into the model slug; pass --effort only if you need to override.",
+        "Review precision on flash was 2/10; use gemini-4-argon-high or claude-opus-5-5-high for high-precision review, and flash for broad scouting.",
+        "Headless print mode auto-denies tools that need confirmation and can return SUCCESS with an empty response."
+      ]
+    },
+    "claude": {
+      "company": "anthropic",
+      "cognitive_strengths": ["architecture-synthesis", "nuanced-implementation", "exploratory-reasoning", "human-alignment"],
+      "tiers": {
+        "fast": {"model": "haiku", "family": "anthropic"},
+        "standard": {"model": "sonnet", "family": "anthropic"},
+        "frontier": {"model": "opus", "family": "anthropic"},
+        "frontier_max": {"model": "opus", "effort": "max", "family": "anthropic"}
+      },
+      "fallback_model": "sonnet",
+      "overhead_tokens": null,
+      "resume_overhead_tokens": null,
+      "notes": [
+        "In-session subagents (Agent tool) have small overhead; `claude -p` from another harness starts cold.",
+        "Updated 2026-10-24: Claude Code 2.1.308 under %LOCALAPPDATA%\\Claude-Data is logged in (oauth_token). ao_common.py resolves both AppData and LocalAppData (Claude-Data / Claude-3p) paths."
+      ]
+    }
+  },
+  "tasks": {
+    "lookup":          {"base_tier": "fast",     "verify_floor": "L1",  "brief_mode": "tight",       "vendor_preference": ["native", "agy", "codex"], "independent": false, "writes": false},
+    "summarize":       {"base_tier": "standard", "verify_floor": "L1",  "brief_mode": "guided",      "vendor_preference": ["native", "agy"],          "independent": false, "writes": false},
+    "explore":         {"base_tier": "standard", "verify_floor": "L1",  "brief_mode": "exploratory", "vendor_preference": ["native", "agy", "codex"], "independent": false, "writes": false},
+    "mechanical-edit": {"base_tier": "fast",     "verify_floor": "L2",  "brief_mode": "tight",       "vendor_preference": ["native", "agy", "codex"], "independent": false, "writes": true},
+    "docs":            {"base_tier": "fast",     "verify_floor": "L1",  "brief_mode": "guided",      "vendor_preference": ["native", "agy", "claude"],"independent": false, "writes": true},
+    "implement":       {"base_tier": "standard", "verify_floor": "L2",  "brief_mode": "guided",      "vendor_preference": ["native", "codex", "claude"], "independent": false, "writes": true},
+    "test":            {"base_tier": "standard", "verify_floor": "L2",  "brief_mode": "tight",       "vendor_preference": ["native", "codex"],        "independent": false, "writes": true},
+    "refactor":        {"base_tier": "standard", "verify_floor": "L2",  "brief_mode": "guided",      "vendor_preference": ["codex", "native"],        "independent": false, "writes": true},
+    "debug":           {"base_tier": "frontier", "verify_floor": "L2",  "brief_mode": "exploratory", "vendor_preference": ["codex", "native", "claude"], "independent": false, "writes": false},
+    "design":          {"base_tier": "frontier", "verify_floor": "L2",  "brief_mode": "exploratory", "type1_verify": "L3", "vendor_preference": ["native", "codex", "claude"], "independent": false, "writes": false},
+    "review":          {"base_tier": "standard", "verify_floor": "L1",  "brief_mode": "guided",      "vendor_preference": ["codex", "agy-pro", "claude", "native"], "independent": true, "writes": false},
+    "security-review": {"base_tier": "frontier", "verify_floor": "L3",  "brief_mode": "guided",      "vendor_preference": ["codex", "claude", "native"], "independent": true,  "writes": false},
+    "critique":        {"base_tier": "frontier", "verify_floor": "n/a", "brief_mode": "exploratory", "vendor_preference": ["codex", "agy", "claude", "native"], "independent": true,  "writes": false, "panel": true},
+    "spike":           {"base_tier": "standard", "verify_floor": "L1",  "brief_mode": "exploratory", "vendor_preference": ["codex", "native"],        "independent": false, "writes": false}
+  },
+  "task_aliases": {
+    "huddle": "critique",
+    "multi-angle": "critique",
+    "council": "critique",
+    "research": "explore",
+    "investigate": "explore",
+    "sensemaking": "explore",
+    "brainstorm": "explore",
+    "plan": "design",
+    "architecture": "design",
+    "fix": "implement",
+    "draft": "docs",
+    "judge": "review",
+    "verify": "review",
+    "audit": "review",
+    "methodology-review": "review"
+  },
+  "vendor_aliases": {"agy-pro": {"vendor": "agy", "min_tier": "frontier"}},
+  "candidates": []
+}

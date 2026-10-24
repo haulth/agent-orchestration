@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WorkerResult",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["status", "summary", "deliverables", "evidence", "risks", "next_action"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "partial", "blocked", "stopped"],
+      "description": "done = acceptance criteria met; partial = budget hit with useful progress; blocked = cannot proceed without a decision; stopped = andon pulled (anomaly, wrong premise, scope or safety issue)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Conclusion first, 1-5 sentences. Every key verdict or conclusion MUST cite an item in `evidence` (e.g. [E1], file:line, or command output). Unbacked claims are rejected as hallucination risk."
+    },
+    "deliverables": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File paths, diff locations or artifact paths. Never paste large content here."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Verifiable ground-truth proof: `file:line-line` + excerpt, `command -> exit/output`, measured numbers, or URL. One item per claim. Prose opinions without anchors do not count as evidence."
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Open issues, assumptions, out-of-scope observations."
+    },
+    "next_action": {
+      "type": "string",
+      "description": "What the manager should do or decide next. Empty string if nothing."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "med", "high"],
+      "description": "Optional: worker's epistemic confidence in the result based on evidence strength."
+    },
+    "assumptions_challenged": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional: premises in the manager's brief that were falsified or misframed. MUST include a verifiable citation (`file:line` or `command -> output`) or a concrete micro-spike that proves it; unbacked skepticism goes to `risks`, not here."
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional: high-value questions, surprises, or emergent leads discovered during the work, with where they were seen (`file:line`)."
+    },
+    "handoff_notes": {
+      "type": "string",
+      "description": "Optional: direct technical notes, invariants, or warnings (with `file:line`) for the next agent in a pipeline or review."
+    }
+  }
+}
