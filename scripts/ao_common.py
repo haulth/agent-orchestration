@@ -705,3 +705,336 @@ def verdict_stats(recs, task_type=None, vendor=None, tier=None, project=None, wi
         streak += 1
     return {"n": len(v), "accepts": accepts, "streak": streak,
             "rate": (accepts / len(v)) if v else None}
+
+
+# ---------- Orchestration Anatomy (Truth-First, DAG Wave Settler & Zero-Defect Audit) ----------
+def _scope_overlaps(s1, s2):
+    """Return True if two normalized write scopes overlap."""
+    a = s1.replace("\\", "/").strip()
+    b = s2.replace("\\", "/").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a.endswith("/") and (b.startswith(a) or a.startswith(b.rstrip("/") + "/")):
+        return True
+    if b.endswith("/") and (a.startswith(b) or b.startswith(a.rstrip("/") + "/")):
+        return True
+    return False
+
+
+def size_tier_of_plan(n_pkgs):
+    """Classify orchestration scale like Anatomy (micro -> figure -> hero -> epic)."""
+    if n_pkgs <= 1:
+        return "micro"
+    if n_pkgs <= 4:
+        return "figure"
+    if n_pkgs <= 8:
+        return "hero"
+    return "epic"
+
+
+def settle_plan(plan, project_dir=None):
+    """Settle a work plan into topological parallel waves (inspired by Anatomy's A.settle).
+    - Wires top-level `truth_contract` into every package's `context_file` (Truth First).
+    - Resolves explicit `depends_on` plus implicit producer (`outputs`) -> consumer (`context_file`/`inputs`) edges.
+    - Auto-wires upstream `outputs` into downstream `context_file` mounts so nothing is lost in relay.
+    - Computes `wave` (0, 1, 2...) for each package and detects any dependency cycles.
+    """
+    proj = Path(project_dir or ".").resolve()
+    raw_pkgs = plan.get("packages", []) if isinstance(plan, dict) else list(plan)
+    truth_contract = plan.get("truth_contract") if isinstance(plan, dict) else None
+    pkgs = []
+    by_name = {}
+    output_owner = {}
+
+    for i, raw in enumerate(raw_pkgs):
+        p = dict(raw)
+        name = str(p.get("name") or p.get("id") or f"pkg{i + 1}").strip()
+        p["name"] = name
+        p["group"] = p.get("group") or ("verification" if p.get("task_type") in ("review", "security-review", "critique", "test") else "core")
+        p["mode"] = p.get("mode") or ("write" if p.get("may_write") else "read")
+        p["depends_on"] = list(p.get("depends_on") or [])
+        p["outputs"] = list(p.get("outputs") or p.get("deliverables") or [])
+        cfiles = list(p.get("context_file") or [])
+        for inp in (p.get("inputs") or []):
+            if inp not in cfiles:
+                cfiles.append(inp)
+        if truth_contract and truth_contract not in cfiles:
+            cfiles.insert(0, truth_contract)
+        p["context_file"] = cfiles
+        p["may_write"] = [str(x).replace("\\", "/") for x in (p.get("may_write") or [])]
+        p["skill"] = list(p.get("skill") or p.get("skills") or [])
+        pkgs.append(p)
+        by_name[name] = p
+        for out_path in p["outputs"]:
+            norm_out = str(out_path).replace("\\", "/")
+            output_owner[norm_out] = name
+
+    # Infer implicit dependencies where pkg B reads a context_file produced by pkg A's outputs
+    for p in pkgs:
+        for cf in p["context_file"]:
+            norm_cf = str(cf).replace("\\", "/")
+            owner = output_owner.get(norm_cf)
+            if owner and owner != p["name"] and owner not in p["depends_on"]:
+                p["depends_on"].append(owner)
+
+    # Wire upstream outputs into downstream context_file mounts
+    for p in pkgs:
+        for dep_name in p["depends_on"]:
+            dep_pkg = by_name.get(dep_name)
+            if dep_pkg:
+                for out_path in dep_pkg.get("outputs", []):
+                    if out_path not in p["context_file"]:
+                        p["context_file"].append(out_path)
+
+    # Topological wave assignment & cycle detection
+    waves_map = {}
+    visiting = set()
+    cycles = []
+
+    def solve_wave(name, stack):
+        if name in waves_map:
+            return waves_map[name]
+        if name in visiting:
+            cycle_path = " -> ".join(stack + [name])
+            if cycle_path not in cycles:
+                cycles.append(cycle_path)
+            return 0
+        pkg = by_name.get(name)
+        if not pkg:
+            return 0
+        visiting.add(name)
+        w = 0
+        for dep in pkg["depends_on"]:
+            if dep in by_name:
+                w = max(w, 1 + solve_wave(dep, stack + [name]))
+        visiting.remove(name)
+        waves_map[name] = w
+        return w
+
+    for p in pkgs:
+        p["wave"] = solve_wave(p["name"], [])
+
+    max_w = max((p["wave"] for p in pkgs), default=-1)
+    waves = [[p for p in pkgs if p["wave"] == w] for w in range(max_w + 1)]
+    hw = probe_hardware()
+    plan_wip = (plan.get("wip") if isinstance(plan, dict) else None) or hw["recommended_wip"]
+    active_wip = min(int(plan_wip), hw["recommended_wip"])
+    return {
+        "truth_contract": truth_contract,
+        "size_tier": size_tier_of_plan(len(pkgs)),
+        "wip": active_wip,
+        "hardware": hw,
+        "packages": pkgs,
+        "waves": waves,
+        "cycles": cycles,
+    }
+
+
+def audit_plan(plan, project_dir=None):
+    """Prove the work decomposition before or during execution (inspired by Anatomy's A.audit & lines.mjs).
+    Checks:
+      1. clearance: 0 overlapping --may-write scopes among parallel writers in the same wave
+      2. cycles: 0 circular dependencies in the DAG
+      3. terminals: 0 unknown depends_on, missing write scopes, or unmounted context_file inputs
+      4. support: 0 hanging intermediate packages whose work is never consumed downstream
+      5. stand_in_briefs: 0 missing or hollow (<40 char / TODO) briefs
+      6. skill_mounts: 0 unresolved parent/sandbox skills
+      7. truth_contract: 0 missing truth contract files
+    """
+    proj = Path(project_dir or ".").resolve()
+    settled = settle_plan(plan, project_dir=proj)
+    pkgs = settled["packages"]
+    by_name = {p["name"]: p for p in pkgs}
+    waves = settled["waves"]
+
+    clearance = []
+    terminals = []
+    support = []
+    stand_in_briefs = []
+    skill_mounts = []
+    truth_issues = []
+
+    tc = settled.get("truth_contract")
+    if tc:
+        tc_path = Path(tc) if Path(tc).is_absolute() else (proj / tc)
+        if not tc_path.exists():
+            truth_issues.append(f"truth_contract '{tc}' does not exist on disk (write the shared ground-truth model first)")
+        elif tc_path.stat().st_size < 20:
+            truth_issues.append(f"truth_contract '{tc}' is hollow (<20 bytes)")
+
+    # Map every output path to the wave in which it is produced
+    output_wave = {}
+    for p in pkgs:
+        for out_p in p.get("outputs", []):
+            output_wave[str(out_p).replace("\\", "/")] = p["wave"]
+
+    # 1. Check clearance per wave (parallel writers must have disjoint --may-write scopes)
+    for w_idx, w_pkgs in enumerate(waves):
+        writers = [p for p in w_pkgs if p.get("mode") == "write" and not p.get("worktree")]
+        for i, w1 in enumerate(writers):
+            for w2 in writers[i + 1:]:
+                for s1 in w1.get("may_write", []):
+                    for s2 in w2.get("may_write", []):
+                        if _scope_overlaps(s1, s2):
+                            clearance.append(
+                                f"wave {w_idx}: '{w1['name']}' ({s1}) x '{w2['name']}' ({s2}) overlap in parallel write scope"
+                            )
+
+    # Track which packages are depended upon by downstream packages
+    depended_on_by = {p["name"]: [] for p in pkgs}
+    for p in pkgs:
+        for dep in p.get("depends_on", []):
+            if dep in depended_on_by:
+                depended_on_by[dep].append(p["name"])
+
+    max_wave = len(waves) - 1
+    for p in pkgs:
+        name = p["name"]
+        # 2. Terminals: depends_on validity, write scope presence, context_file mounts
+        for dep in p.get("depends_on", []):
+            if dep not in by_name:
+                terminals.append(f"{name}: depends_on '{dep}' does not exist in plan")
+            elif by_name[dep]["wave"] >= p["wave"] and not settled["cycles"]:
+                terminals.append(f"{name}: depends_on '{dep}' is not in an earlier wave")
+        if p.get("mode") == "write" and not p.get("may_write"):
+            terminals.append(f"{name}: mode is 'write' but may_write is empty (unbounded write)")
+        for cf in p.get("context_file", []):
+            if tc and cf == tc:
+                continue
+            norm_cf = str(cf).replace("\\", "/")
+            cf_path = Path(cf) if Path(cf).is_absolute() else (proj / cf)
+            prod_w = output_wave.get(norm_cf)
+            if not cf_path.exists() and (prod_w is None or prod_w >= p["wave"]):
+                terminals.append(f"{name}: context_file '{cf}' is neither on disk nor produced by an earlier wave")
+
+        # 3. Support: intermediate read-only packages in multi-wave plans must feed a downstream package (unless marked free)
+        if max_wave > 0 and p["wave"] < max_wave and p.get("mode") == "read":
+            if not depended_on_by.get(name) and not p.get("free"):
+                support.append(f"{name} (wave {p['wave']}): read-only package has no downstream consumer in wave > {p['wave']} (hanging output)")
+
+        # 4. Stand-in briefs: verify brief exists and is not hollow
+        brief_ref = p.get("brief") or p.get("brief_file")
+        if not brief_ref:
+            stand_in_briefs.append(f"{name}: missing 'brief' path")
+        else:
+            bp = Path(brief_ref) if Path(brief_ref).is_absolute() else (proj / brief_ref)
+            if not bp.exists():
+                stand_in_briefs.append(f"{name}: brief file '{brief_ref}' does not exist")
+            else:
+                try:
+                    btxt = bp.read_text(encoding="utf-8", errors="replace").strip()
+                    if len(btxt) < 40 or re.search(r"^(TODO|TBD|<fill in>)$", btxt, re.I):
+                        stand_in_briefs.append(f"{name}: brief '{brief_ref}' is a stand-in stub ({len(btxt)} chars; needs real intent, scope & DoD)")
+                except OSError as e:
+                    stand_in_briefs.append(f"{name}: cannot read brief '{brief_ref}': {e}")
+
+        # 5. Skill mounts: verify every requested skill exists on parent or sandbox
+        for sk in p.get("skill", []):
+            if not resolve_skill_info(sk, project_dir=proj):
+                skill_mounts.append(f"{name}: skill '{sk}' not found on parent agent or sandbox")
+
+    epic_notice = None
+    if settled["size_tier"] == "epic" and not (isinstance(plan, dict) and plan.get("epic_approved")):
+        epic_notice = (f"Epic scale ({len(pkgs)} packages > 8): per Anatomy sizing rules, propose a Hero slice (4-8 packages) "
+                       "to the user first, or set \"epic_approved\": true once the user chooses the full Epic.")
+
+    failures_total = (
+        len(clearance) + len(settled["cycles"]) + len(terminals) +
+        len(support) + len(stand_in_briefs) + len(skill_mounts) + len(truth_issues)
+    )
+    return {
+        "ok": failures_total == 0,
+        "failure_count": failures_total,
+        "size_tier": settled["size_tier"],
+        "epic_notice": epic_notice,
+        "package_count": len(pkgs),
+        "wave_count": len(waves),
+        "writer_count": sum(1 for p in pkgs if p.get("mode") == "write"),
+        "wip": settled["wip"],
+        "hardware": settled["hardware"]["summary"],
+        "clearance": clearance,
+        "cycles": settled["cycles"],
+        "terminals": terminals,
+        "support": support,
+        "stand_in_briefs": stand_in_briefs,
+        "skill_mounts": skill_mounts,
+        "truth_contract": truth_issues,
+        "settled": settled,
+    }
+
+
+def format_anatomy_report(audit_res):
+    """Format an Anatomy-style audit report where every structural line must read 0."""
+    lines = []
+    checks = [
+        ("clearance (disjoint wave write scopes)", audit_res["clearance"]),
+        ("cycles (DAG topological order)", audit_res["cycles"]),
+        ("terminals (mounts, ports & context inputs)", audit_res["terminals"]),
+        ("support (no hanging intermediate packages)", audit_res["support"]),
+        ("stand-in briefs (work order substance)", audit_res["stand_in_briefs"]),
+        ("skill mounts (parent/sandbox skill paths)", audit_res["skill_mounts"]),
+        ("truth contract (single source of truth)", audit_res["truth_contract"]),
+    ]
+    for label, probs in checks:
+        lines.append(f"{label}: {len(probs)} problems")
+        for item in probs[:10]:
+            lines.append(f"  - {item}")
+    if audit_res.get("epic_notice"):
+        lines.append(f"sizing gate notice: {audit_res['epic_notice']}")
+    for w_idx, w_pkgs in enumerate(audit_res["settled"]["waves"]):
+        p_desc = ", ".join(
+            f"{p['name']}[{p['mode']}" + (f" deps={','.join(p['depends_on'])}" if p.get("depends_on") else "") + "]"
+            for p in w_pkgs
+        )
+        lines.append(f"wave {w_idx}: {p_desc}")
+    lines.append(
+        f"anatomy audit · {audit_res['package_count']} packages · {audit_res['wave_count']} waves · "
+        f"{audit_res['writer_count']} writers · size {audit_res['size_tier']} · wip {audit_res['wip']}"
+    )
+    lines.append(
+        f"audit failed: {audit_res['failure_count']} problem(s)" if not audit_res["ok"] else "audit passed"
+    )
+    return "\n".join(lines)
+
+
+def audit_batch_junctions(settled_pkgs, results_by_name, project_dir=None):
+    """Post-flight 4x Junction & Line-End Check across completed packages in a batch.
+    Checks that every declared output exists on disk, and surfaces any unresolved
+    assumptions_challenged, open_questions, or evidence_warnings at package seams."""
+    proj = Path(project_dir or ".").resolve()
+    missing_outputs = []
+    challenged = []
+    floating_questions = []
+    ev_warnings = []
+
+    max_wave = max((p.get("wave", 0) for p in settled_pkgs), default=0)
+    for p in settled_pkgs:
+        name = p["name"]
+        meta = results_by_name.get(name) or {}
+        for out_p in p.get("outputs", []):
+            fp = Path(out_p) if Path(out_p).is_absolute() else (proj / out_p)
+            if not fp.exists():
+                missing_outputs.append(f"{name}: declared output '{out_p}' was not created on disk")
+        for ew in (meta.get("evidence_warnings") or []):
+            ev_warnings.append(f"{name}: {ew}")
+        run_dir = meta.get("run_dir")
+        if run_dir and (Path(run_dir) / "result.json").exists():
+            try:
+                robj = json.loads((Path(run_dir) / "result.json").read_text(encoding="utf-8"))
+                for ac in (robj.get("assumptions_challenged") or []):
+                    challenged.append(f"{name} (wave {p.get('wave', 0)}): {ac}")
+                for oq in (robj.get("open_questions") or []):
+                    # If raised in the final wave, it remains open for the manager
+                    floating_questions.append(f"{name} (wave {p.get('wave', 0)}): {oq}")
+            except (OSError, ValueError):
+                pass
+    return {
+        "ok": len(missing_outputs) == 0 and len(ev_warnings) == 0,
+        "missing_outputs": missing_outputs,
+        "assumptions_challenged": challenged,
+        "open_questions": floating_questions,
+        "evidence_warnings": ev_warnings,
+        "final_wave": max_wave,
+    }

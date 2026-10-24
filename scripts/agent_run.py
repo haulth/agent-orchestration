@@ -7,7 +7,7 @@
                    [--skill SKILL_NAME_OR_PATH ...] [--worktree] [--search] [--bare]
                    [--max-budget-usd USD] [--timeout S] [--schema PATH|none] [--resume ID]
                    [--task-type T] [--risk low|med|high] [--tier T] [--no-ledger]
-  agent_run.py batch plan.json [--wip N]
+  agent_run.py batch plan.json [--wip N] [--audit]
   agent_run.py verdict RUN_DIR accept|revise|escalate|rollback|takeover [--note "..."]
   agent_run.py stats [--project P] [--task-type T]
 
@@ -592,60 +592,96 @@ def cmd_run(a):
 
 def cmd_batch(a):
     guard_depth(a.allow_spawn)
-    plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
-    pkgs = plan["packages"] if isinstance(plan, dict) else plan
-    hw = ao.probe_hardware()
-    plan_wip = (plan.get("wip") if isinstance(plan, dict) else None) or 3
-    wip = a.wip or min(plan_wip, hw["recommended_wip"])
+    plan_path = Path(a.plan).resolve()
+    plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
+    proj_dir = Path(a.project_dir).resolve() if getattr(a, "project_dir", None) else (
+        plan_path.parent.parent if plan_path.parent.name == ".orch" else Path.cwd().resolve()
+    )
+    audit_res = ao.audit_plan(plan, project_dir=proj_dir)
+    if getattr(a, "audit", False):
+        print(ao.format_anatomy_report(audit_res))
+        return 0 if audit_res["ok"] else 1
+    if not audit_res["ok"]:
+        print(ao.format_anatomy_report(audit_res), file=sys.stderr)
+        raise Usage(f"batch plan failed pre-flight anatomy audit ({audit_res['failure_count']} problem(s)); fix the plan or run with --audit to inspect")
+
+    settled = audit_res["settled"]
+    hw = settled["hardware"]
+    wip = min(a.wip, hw["recommended_wip"]) if a.wip else settled["wip"]
+    print(f"[anatomy] {audit_res['package_count']} packages across {audit_res['wave_count']} wave(s) | size={audit_res['size_tier']} | audit passed")
     print(f"[hardware] {hw['summary']} -> active parallel wip={wip}")
+
     base = dict(agent=None, brief=None, name=None, out=None, model=None, effort=None, mode=None, cd=None,
                 may_write=[], add_dir=[], context_file=[], skill=[], worktree=False, search=False, bare=False,
                 max_budget_usd=None, timeout=900, schema=str(DEFAULT_SCHEMA), resume=None,
                 task_type=None, risk=None, tier=None, no_ledger=False, allow_outside=False,
                 allow_spawn=False, allow_tool=[], allow_unknown_resume=False, allow_unchecked_write=False)
-    specs = []
-    for i, p in enumerate(pkgs):
-        d = {**base, **{k: v for k, v in p.items() if k in base}}
-        if p.get("skills") and not d.get("skill"):
-            d["skill"] = p["skills"]
-        d["_name"] = p.get("name") or f"pkg{i + 1}"
-        if not d.get("name"):
-            d["name"] = d["_name"]
-        specs.append(d)
-    writers = [s for s in specs if s["mode"] == "write" and not s.get("worktree")]
-    for i, w1 in enumerate(writers):
-        for w2 in writers[i + 1:]:
-            if any(in_scope(p1, w2["may_write"]) or in_scope(p2, w1["may_write"])
-                   for p1 in w1["may_write"] for p2 in w2["may_write"]):
-                raise Usage(f"batch has overlapping --may-write scopes between '{w1['_name']}' ({w1['may_write']}) "
-                            f"and '{w2['_name']}' ({w2['may_write']}); keep write scopes disjoint for parallel execution")
-    for s in specs:
-        s["_peer_write_scopes"] = [p for w in writers if w["_name"] != s["_name"] for p in (w.get("may_write") or [])]
 
-    def go(s):
-        ns = argparse.Namespace(**{k: v for k, v in s.items() if not k.startswith("_") or k == "_peer_write_scopes"})
-        try:
-            meta, _, _ = run_one(ns)
-            return s["_name"], meta, None
-        except Usage as e:
-            return s["_name"], None, str(e)
-
-    # All independent packages (research, critique, coding, testing) with disjoint scopes run in PARALLEL
-    with ThreadPoolExecutor(max_workers=wip) as ex:
-        done = dict(zip([s["_name"] for s in specs], ex.map(go, specs)))
-    results = [done[s["_name"]] for s in specs]
+    meta_by_name = {}
     worst = 0
-    for name, m, err in results:
-        if err:
-            print(f"{name}: ERROR {err}")
-            worst = max(worst, 2)
-            continue
-        status = "ok" if m["ok"] else f"FAIL:{m['failure']}"
-        viol = f" VIOLATIONS={m['violations']}" if m["violations"] else ""
-        viol += f" auto_denied={m['auto_denied_count']}" if m["auto_denied_count"] else ""
-        print(f"{name}: {m['agent']} {status} tokens={m['tokens_used']} {m['duration_s']}s "
-              f"changed={len(m['changed'])}{viol} {m['run_dir']}")
-        worst = max(worst, 1 if not m["ok"] else (3 if m["violations"] else 0))
+    for w_idx, w_pkgs in enumerate(settled["waves"]):
+        specs = []
+        for i, p in enumerate(w_pkgs):
+            d = {**base, **{k: v for k, v in p.items() if k in base}}
+            d["cd"] = d.get("cd") or str(proj_dir)
+            d["_name"] = p["name"]
+            d["_depends_on"] = list(p.get("depends_on") or [])
+            # Auto-wire upstream completed result.json & deliverables into downstream context_file mounts
+            cfiles = list(d.get("context_file") or [])
+            for dep_name in d["_depends_on"]:
+                dep_m = meta_by_name.get(dep_name)
+                if dep_m and dep_m.get("run_dir"):
+                    res_json = Path(dep_m["run_dir"]) / "result.json"
+                    if res_json.exists() and str(res_json) not in cfiles:
+                        cfiles.append(str(res_json))
+            d["context_file"] = cfiles
+            specs.append(d)
+
+        writers = [s for s in specs if s["mode"] == "write" and not s.get("worktree")]
+        for s in specs:
+            s["_peer_write_scopes"] = [p for w in writers if w["_name"] != s["_name"] for p in (w.get("may_write") or [])]
+
+        def go(s):
+            failed_deps = [dep for dep in s["_depends_on"] if not (meta_by_name.get(dep) or {}).get("ok")]
+            if failed_deps:
+                return s["_name"], None, f"SKIPPED (upstream dependency failed: {', '.join(failed_deps)})"
+            ns = argparse.Namespace(**{k: v for k, v in s.items() if not k.startswith("_") or k == "_peer_write_scopes"})
+            try:
+                meta, _, _ = run_one(ns)
+                return s["_name"], meta, None
+            except Usage as e:
+                return s["_name"], None, str(e)
+
+        if len(settled["waves"]) > 1:
+            print(f"--- wave {w_idx} ({len(specs)} parallel package(s)) ---")
+        with ThreadPoolExecutor(max_workers=wip) as ex:
+            done = dict(zip([s["_name"] for s in specs], ex.map(go, specs)))
+        for s in specs:
+            name, m, err = done[s["_name"]]
+            if err:
+                print(f"{name}: ERROR {err}")
+                worst = max(worst, 2 if "SKIPPED" not in err else 1)
+                continue
+            meta_by_name[name] = m
+            status = "ok" if m["ok"] else f"FAIL:{m['failure']}"
+            viol = f" VIOLATIONS={m['violations']}" if m["violations"] else ""
+            viol += f" auto_denied={m['auto_denied_count']}" if m["auto_denied_count"] else ""
+            print(f"{name}: {m['agent']} {status} tokens={m['tokens_used']} {m['duration_s']}s "
+                  f"changed={len(m['changed'])}{viol} {m['run_dir']}")
+            worst = max(worst, 1 if not m["ok"] else (3 if m["violations"] else 0))
+
+    junc = ao.audit_batch_junctions(settled["packages"], meta_by_name, project_dir=proj_dir)
+    print(f"[junctions 4x] missing_outputs={len(junc['missing_outputs'])} "
+          f"assumptions_challenged={len(junc['assumptions_challenged'])} "
+          f"open_questions={len(junc['open_questions'])} "
+          f"evidence_warnings={len(junc['evidence_warnings'])}")
+    for item in junc["missing_outputs"]:
+        print(f"  MISSING OUTPUT: {item}")
+        worst = max(worst, 1)
+    for item in junc["assumptions_challenged"]:
+        print(f"  PREMISE CHALLENGED: {item}")
+    for item in junc["open_questions"][:5]:
+        print(f"  OPEN QUESTION AT SEAM: {item}")
     return worst
 
 
@@ -756,6 +792,8 @@ def main():
     b = sub.add_parser("batch")
     b.add_argument("plan")
     b.add_argument("--wip", type=int)
+    b.add_argument("--project-dir", default=None, help="project root directory for resolving relative paths in plan.json")
+    b.add_argument("--audit", action="store_true", help="prove the batch plan (0 collisions, 0 cycles, 0 dangling mounts, 0 hollow briefs) and exit")
     b.add_argument("--allow-spawn", action="store_true")
     v = sub.add_parser("verdict")
     v.add_argument("target", help="run dir, or '-' with --agent/--task-type/--tier")

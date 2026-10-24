@@ -26,6 +26,12 @@
     - **Rule 1 — Share Parent Skill Paths First (Never Re-Install What You Can Read):** `route.py --list-skills` scans all parent/host skill directories (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/config/skills`, `plugins/*/skills`, `builtin/skills`). When a parent agent has a matching skill, pass `--skill <name>` in `agent_run.py run`/`batch` (or pass the `SKILL.md` path directly in a native sub-agent's brief). `agent_run.py` automatically injects the `SKILL.md` path and mounts the skill directory (`--add-dir`) so child agents read it directly without installing anything.
     - **Rule 2 — Ephemeral Skill Sandbox (`~/.agent-orchestration/sandbox-skills/`):** Only when NO local parent skill covers the task, run `skill_sandbox.py search <query>` to search curated high-trust registries (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, `obra/superpowers`, or verified GitHub repos with `>= 50` stars). **Always ask the user for approval first**, then run `skill_sandbox.py install <repo> [--subpath ...] --approved-by-user`. The skill is security-scanned and stored strictly inside `agent-orchestration`'s own ephemeral sandbox memory (never touching system/global folders) and can be deleted anytime via `skill_sandbox.py remove <name>` or `skill_sandbox.py purge`.
 
+12. **Orchestration Anatomy Engine — Size Gate, Truth First, Settle & Audit to Zero, 4x Junction Check (`anatomy.py` + `batch --audit`):**
+    - **Size It First (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Name the scale up front. If `>8` packages (`Epic`), stop and propose a `Hero` slice (`<=8` packages) first unless the user explicitly approves the Epic.
+    - **Truth First (`truth_contract`):** Put shared invariants, interfaces, and constants in one shared Truth Contract file (`.orch/truth-contract.md`); `settle_plan()` automatically mounts it into every package's `context_file` so parallel workers never drift.
+    - **Settle & Audit to Zero (`anatomy.py init|settle|audit` & `agent_run.py batch --audit`):** Automatically solves topological execution waves (`Wave 0, Wave 1, ...`), wires upstream `outputs` + `result.json` into downstream `context_file` mounts between waves, and proves **0 structural problems** before execution (`clearance: 0 wave write overlaps`, `cycles: 0`, `terminals: 0 dangling deps/writes/inputs`, `support: 0 hanging packages`, `stand_in_briefs: 0 hollow briefs`, `skill_mounts: 0 missing skills`).
+    - **1x Macro & 4x Junction Close-Ups (`anatomy.py inspect`):** Post-flight check across every producer→consumer seam verifying all declared `outputs` exist on disk and surfacing `assumptions_challenged`, `open_questions`, and `evidence_warnings`.
+
 ---
 
 ## 2. Fast CLI Command Matrix (All 3 Agents)
@@ -51,8 +57,14 @@ python <skill>/scripts/route.py --task-type design --manager agy --same-model
 python <skill>/scripts/route.py --task-type review --builder agy --manager agy --same-model
 python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
-# 5. Hardware-Capped Parallel Batch Execution (runs independent read/write packages in parallel)
-python <skill>/scripts/agent_run.py batch plan.json
+# 5. Orchestration Anatomy: Init Truth + Wave DAG, Audit to Zero, Multi-Wave Batch & 4x Junction Check
+python <skill>/scripts/anatomy.py init --goal "Build & verify auth" \
+       --pkg "contract:guided:::src/types.py::.orch/auth-schema.md" \
+       --pkg "impl:guided:contract:src/auth/::src/auth/handler.py" \
+       --pkg "verify:exploratory:impl" --out .orch/plan.json
+python <skill>/scripts/anatomy.py audit .orch/plan.json
+python <skill>/scripts/agent_run.py batch .orch/plan.json --audit
+python <skill>/scripts/anatomy.py inspect .orch/plan.json
 
 # 6. Ephemeral Skill Sandbox (ONLY when parent agent lacks a needed skill; MUST ask user before install)
 python <skill>/scripts/skill_sandbox.py check <keyword>

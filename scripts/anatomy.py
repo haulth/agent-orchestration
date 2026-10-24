@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""anatomy.py — Orchestration Anatomy Engine (Size Gate, Truth Contract, Parts BOM, Settle & Audit to Zero, 4x Junction Check)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ao_common as ao  # noqa: E402
+
+
+def _parse_pkg_spec(spec: str) -> dict:
+    """Parse --pkg name[:brief_mode[:deps[:may_write[:skills[:outputs]]]]].
+
+    Format examples:
+      schema:guided::src/schema.py::.orch/schema-summary.md
+      api:tight:schema:src/api/:fastapi:.orch/api-routes.json
+      verify:exploratory:schema,api
+    """
+    parts = spec.split(":")
+    name = (parts[0] if len(parts) > 0 else "").strip()
+    if not name:
+        raise ValueError(f"Invalid --pkg spec '{spec}': missing package name")
+    raw_mode = (parts[1] if len(parts) > 1 and parts[1].strip() else "guided").strip().lower()
+    deps = [x.strip() for x in (parts[2] if len(parts) > 2 else "").split(",") if x.strip()]
+    may_write = [x.strip() for x in (parts[3] if len(parts) > 3 else "").split(",") if x.strip()]
+    skills = [x.strip() for x in (parts[4] if len(parts) > 4 else "").split(",") if x.strip()]
+    outputs = [x.strip() for x in (parts[5] if len(parts) > 5 else "").split(",") if x.strip()]
+    exec_mode = "write" if (may_write or raw_mode == "write") else "read"
+    brief_mode = raw_mode if raw_mode in ("tight", "guided", "exploratory") else ("guided" if exec_mode == "write" else "exploratory")
+    return {
+        "name": name,
+        "mode": exec_mode,
+        "brief_mode": brief_mode,
+        "depends_on": deps,
+        "may_write": may_write,
+        "skill": skills,
+        "outputs": outputs,
+    }
+
+
+def _scaffold_truth_contract(path: Path, goal: str, pkgs: list[dict]) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"# Shared Truth Contract — {goal}",
+        "",
+        "## 1. System Goal & Non-Negotiable Invariants",
+        f"- **Primary Objective**: {goal}",
+        "- Every worker package MUST read and obey all names, schemas, paths, and constraints declared in this contract.",
+        "- Do NOT invent undocumented cross-package interfaces; if a seam is ambiguous, surface it in `open_questions` or `assumptions_challenged`.",
+        "",
+        "## 2. Parts Bill of Materials (BOM) & Seam Contracts",
+    ]
+    for idx, p in enumerate(pkgs, 1):
+        deps = ", ".join(p.get("depends_on") or []) or "(root / Wave 0)"
+        writes = ", ".join(p.get("may_write") or []) or "(read-only)"
+        outs = ", ".join(p.get("outputs") or []) or f".orch/{p['name']}/result.json"
+        lines.append(
+            f"{idx}. **`{p['name']}`** (`mode={p['mode']}`, `brief_mode={p['brief_mode']}`) — depends_on: `{deps}` | may_write: `{writes}` | outputs: `{outs}`"
+        )
+    lines.extend([
+        "",
+        "## 3. Shared Data Shapes & Constants",
+        "- Return the standard JSON result envelope (`status`, `summary`, `confidence`, `evidence`, `deliverables`, `assumptions_challenged`, `open_questions`, `risks`, `next_action`).",
+    ])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _scaffold_pkg_brief(
+    path: Path,
+    goal: str,
+    truth_rel: str,
+    pkg: dict,
+) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writes = ", ".join(pkg.get("may_write") or []) or "Read-only (no project file mutations)"
+    deps = ", ".join(pkg.get("depends_on") or []) or "None (Wave 0 root package)"
+    outs = ", ".join(pkg.get("outputs") or []) or f"Structured result envelope (.orch/{pkg['name']}/result.json)"
+    skills = ", ".join(pkg.get("skill") or []) or "None"
+    content = "\n".join([
+        f"# Work Package Brief — `{pkg['name']}` ({pkg['brief_mode'].upper()} Brief / {pkg['mode'].upper()} Access)",
+        "",
+        "## Shared Truth & Upstream Dependencies",
+        f"- **Overall Goal**: {goal}",
+        f"- **Shared Truth Contract**: `{truth_rel}` (mounted in `--context-file`; obey all shared invariants and interfaces)",
+        f"- **Upstream Dependencies (`depends_on`)**: {deps}",
+        f"- **Delegated Specialized Skills (`--skill`)**: {skills}",
+        "",
+        "## Scope & Write Boundaries",
+        f"- **Allowed Write Scope (`--may-write`)**: {writes}",
+        f"- **Declared Deliverable Outputs (`outputs`)**: {outs}",
+        "",
+        "## Concrete Assignment & Acceptance Criteria",
+        f"1. Execute work package `{pkg['name']}` to advance: {goal}.",
+        "2. Verify compatibility at every seam with upstream inputs and the Shared Truth Contract.",
+        "3. Cite exact `file:line` anchors or command outputs in `evidence`, and report any cross-seam mismatch in `assumptions_challenged`.",
+    ])
+    path.write_text(content + "\n", encoding="utf-8")
+
+
+def cmd_init(a: argparse.Namespace) -> int:
+    proj = Path(a.project_dir).resolve()
+    out_path = Path(a.out) if Path(a.out).is_absolute() else (proj / a.out)
+    orch_dir = out_path.parent
+    orch_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_pkgs = [_parse_pkg_spec(s) for s in a.pkg]
+    tier = ao.size_tier_of_plan(len(raw_pkgs))
+    if tier == "epic" and not a.allow_epic:
+        sys.stderr.write(
+            f"[anatomy] EPIC GATE: Plan has {len(raw_pkgs)} packages (>8 = epic scale). "
+            "Propose a Hero slice (4-8 packages) first, or pass --allow-epic if the user explicitly approved the Epic.\n"
+        )
+        return 2
+
+    if a.truth_contract:
+        truth_rel = a.truth_contract
+    else:
+        try:
+            truth_rel = str((orch_dir / "truth-contract.md").relative_to(proj)).replace("\\", "/")
+        except ValueError:
+            truth_rel = str(orch_dir / "truth-contract.md")
+    truth_abs = Path(truth_rel) if Path(truth_rel).is_absolute() else (proj / truth_rel)
+    _scaffold_truth_contract(truth_abs, a.goal, raw_pkgs)
+
+    plan_pkgs = []
+    for p in raw_pkgs:
+        brief_abs = orch_dir / f"brief-{p['name']}.md"
+        _scaffold_pkg_brief(brief_abs, a.goal, truth_rel, p)
+        try:
+            brief_rel = str(brief_abs.relative_to(proj)).replace("\\", "/")
+        except ValueError:
+            brief_rel = str(brief_abs)
+        entry: dict = {
+            "name": p["name"],
+            "mode": p["mode"],
+            "brief_mode": p["brief_mode"],
+            "brief": brief_rel,
+            "depends_on": p["depends_on"],
+            "may_write": p["may_write"],
+            "context_file": [truth_rel],
+            "skill": p["skill"],
+            "outputs": p["outputs"],
+        }
+        if a.agent:
+            entry["agent"] = a.agent
+        if a.model:
+            entry["model"] = a.model
+        plan_pkgs.append(entry)
+
+    plan: dict = {
+        "goal": a.goal,
+        "truth_contract": truth_rel,
+        "epic_approved": bool(a.allow_epic),
+        "packages": plan_pkgs,
+    }
+    settled = ao.settle_plan(plan, proj)
+    plan["size_tier"] = settled["size_tier"]
+    plan["waves"] = [[p["name"] for p in w] for w in settled["waves"]]
+    plan["packages"] = [
+        {
+            "name": p["name"],
+            "mode": p["mode"],
+            "brief_mode": p.get("brief_mode", "guided"),
+            "wave": p["wave"],
+            "brief": p.get("brief") or p.get("brief_file"),
+            "depends_on": p["depends_on"],
+            "may_write": p["may_write"],
+            "context_file": p["context_file"],
+            "skill": p["skill"],
+            "outputs": p["outputs"],
+            **({"agent": p["agent"]} if p.get("agent") else {}),
+            **({"model": p["model"]} if p.get("model") else {}),
+        }
+        for p in settled["packages"]
+    ]
+    out_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+    audit_res = ao.audit_plan(plan, proj)
+    if a.json:
+        print(json.dumps({"plan_file": str(out_path), "audit": audit_res}, indent=2))
+    else:
+        print(f"Scaffolded & settled plan -> {out_path}")
+        print(ao.format_anatomy_report(audit_res))
+    return 0 if audit_res["ok"] else 1
+
+
+def cmd_settle(a: argparse.Namespace) -> int:
+    proj = Path(a.project_dir).resolve()
+    pfile = Path(a.plan_file).resolve()
+    plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
+    settled = ao.settle_plan(plan, proj)
+    if a.write:
+        plan["size_tier"] = settled["size_tier"]
+        plan["waves"] = [[p["name"] for p in w] for w in settled["waves"]]
+        plan["packages"] = settled["packages"]
+        pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    if a.json:
+        print(json.dumps(settled, indent=2))
+    else:
+        print(f"Settled {len(settled['packages'])} packages ({settled['size_tier']}) into {len(settled['waves'])} waves (wip={settled['wip']}):")
+        for w_idx, w_pkgs in enumerate(settled["waves"]):
+            print(f"  Wave {w_idx}: {', '.join(p['name'] for p in w_pkgs)}")
+        if settled["cycles"]:
+            print(f"  Cycles detected: {', '.join(settled['cycles'])}")
+    return 0 if not settled["cycles"] else 1
+
+
+def cmd_audit(a: argparse.Namespace) -> int:
+    proj = Path(a.project_dir).resolve()
+    pfile = Path(a.plan_file).resolve()
+    plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
+    audit_res = ao.audit_plan(plan, proj)
+    if a.json:
+        print(json.dumps(audit_res, indent=2))
+    else:
+        print(ao.format_anatomy_report(audit_res))
+    return 0 if audit_res["ok"] else 1
+
+
+def cmd_inspect(a: argparse.Namespace) -> int:
+    proj = Path(a.project_dir).resolve()
+    pfile = Path(a.plan_file).resolve()
+    plan = json.loads(pfile.read_text(encoding="utf-8-sig"))
+    settled = ao.settle_plan(plan, proj)
+    results_dir = Path(a.results_dir).resolve() if a.results_dir else pfile.parent
+    results_by_name: dict[str, dict] = {}
+    for p in settled["packages"]:
+        pdir = results_dir / p["name"]
+        mfile = pdir / "meta.json"
+        if mfile.exists():
+            try:
+                results_by_name[p["name"]] = json.loads(mfile.read_text(encoding="utf-8-sig"))
+            except Exception:
+                results_by_name[p["name"]] = {"run_dir": str(pdir)}
+        elif (pdir / "result.json").exists():
+            results_by_name[p["name"]] = {"run_dir": str(pdir)}
+    junctions = ao.audit_batch_junctions(settled["packages"], results_by_name, proj)
+    if a.json:
+        print(json.dumps(junctions, indent=2))
+    else:
+        print("=== 4x Junction & Seam Inspection ===")
+        print(f"missing_outputs   : {len(junctions['missing_outputs'])}")
+        for m in junctions["missing_outputs"]:
+            print(f"  ! {m}")
+        print(f"challenged_seams  : {len(junctions['assumptions_challenged'])}")
+        for c in junctions["assumptions_challenged"]:
+            print(f"  ~ {c}")
+        print(f"open_questions    : {len(junctions['open_questions'])}")
+        for q in junctions["open_questions"]:
+            print(f"  ? {q}")
+        print(f"evidence_warnings : {len(junctions['evidence_warnings'])}")
+        for w in junctions["evidence_warnings"]:
+            print(f"  * {w}")
+        print("junction audit passed" if junctions["ok"] else "junction audit FAILED")
+    return 0 if junctions["ok"] else 1
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Orchestration Anatomy Engine: Size Gate, Truth Contract, Settle Wave DAG, Audit to Zero, and 4x Junction Inspection."
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    pi = sub.add_parser("init", help="Scaffold Shared Truth Contract, non-hollow briefs, and settled plan.json, then audit to zero")
+    pi.add_argument("--goal", required=True, help="Primary system goal for the anatomy plan")
+    pi.add_argument(
+        "--pkg",
+        action="append",
+        required=True,
+        help="Package spec: name[:brief_mode[:deps_csv[:may_write_csv[:skills_csv[:outputs_csv]]]]]",
+    )
+    pi.add_argument("--truth-contract", default=None, help="Relative path to shared truth contract markdown")
+    pi.add_argument("--out", default=".orch/plan.json", help="Output plan.json path (default: .orch/plan.json)")
+    pi.add_argument("--project-dir", default=".")
+    pi.add_argument("--agent", default=None)
+    pi.add_argument("--model", default=None)
+    pi.add_argument("--allow-epic", action="store_true", help="Explicitly approve Epic scale (>8 packages)")
+    pi.add_argument("--json", action="store_true")
+
+    ps = sub.add_parser("settle", help="Solve topological waves and auto-wire truth_contract + upstream outputs -> downstream context_file")
+    ps.add_argument("plan_file", help="Path to plan.json")
+    ps.add_argument("--project-dir", default=".")
+    ps.add_argument("--write", action="store_true", help="Write settled waves and context wiring back to plan_file")
+    ps.add_argument("--json", action="store_true")
+
+    pa = sub.add_parser("audit", help="Run zero-defect structural pre-flight audit on plan.json")
+    pa.add_argument("plan_file", help="Path to plan.json")
+    pa.add_argument("--project-dir", default=".")
+    pa.add_argument("--json", action="store_true")
+
+    pj = sub.add_parser("inspect", help="Run 4x post-flight junction & seam check across package outputs and result envelopes")
+    pj.add_argument("plan_file", help="Path to plan.json")
+    pj.add_argument("--results-dir", default=None, help="Directory containing <pkg>/result.json (defaults to plan_file parent)")
+    pj.add_argument("--project-dir", default=".")
+    pj.add_argument("--json", action="store_true")
+
+    args = ap.parse_args()
+    if args.cmd == "init":
+        return cmd_init(args)
+    if args.cmd == "settle":
+        return cmd_settle(args)
+    if args.cmd == "audit":
+        return cmd_audit(args)
+    if args.cmd == "inspect":
+        return cmd_inspect(args)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

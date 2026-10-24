@@ -120,15 +120,20 @@ Compare the surviving approaches explicitly before committing:
 | **Key Evidence (`file:line`)** | `[E1] src/core/ a.py:40` | `[E2] src/auth.py:112` | Verified by spike `[E3]` |
 ```
 
-### Stage 5: Plan & Execute Parallel Work (`agent_run.py batch` + Parent Skill Sharing & Ephemeral Skill Sandbox)
-Turn the synthesized option into an executable parallel batch plan (`plan.json`):
-1. **Shared Blackboard (`--context-file`):** Share upstream specs, contracts, or findings directly via `--context-file <path>` so parallel workers read exact ground truth.
-2. **Parent-to-Child Skill Path Sharing (`--skill` — Zero Redundant Installs):**
+### Stage 5: Orchestration Anatomy — Size It, Truth First, Settle & Audit to Zero, Execute & 4x Junction Verify
+Turn the synthesized option into a zero-defect multi-wave anatomy plan (`plan.json`) using `anatomy.py` and `agent_run.py batch --audit`:
+1. **Size Gate (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Name the scale first. If a plan exceeds 8 packages (`Epic`), stop and propose a `Hero` slice (`<=8` packages) first unless the user explicitly approves `--allow-epic`.
+2. **Truth First (`truth_contract` + `--context-file`):** Define all shared numbers, schemas, paths, and cross-package invariants in one shared file (`.orch/truth-contract.md`). `ao_common.settle_plan()` automatically mounts `truth_contract` and upstream `outputs` into downstream `context_file` lists so parallel workers never drift.
+3. **Settle Wave DAG & Audit to Zero (`anatomy.py init|settle|audit` & `batch --audit`):**
+   - `settle_plan()` solves topological execution waves (`Wave 0, Wave 1, ...`) from explicit `depends_on` and implicit `outputs -> context_file` edges.
+   - `audit_plan()` proves **0 structural problems** across 7 deterministic checks before any agent runs: `clearance` (0 overlapping `may_write` scopes in the same wave), `cycles` (0 DAG cycles), `terminals` (0 missing `depends_on`, invalid `may_write`, or unmounted inputs), `support` (0 hanging intermediate read-only packages with no consumers), `stand_in_briefs` (0 hollow 1-liner briefs), `skill_mounts` (0 missing `--skill` references), and `truth_contract` existence.
+4. **Parent-to-Child Skill Path Sharing (`--skill` — Zero Redundant Installs):**
    - If the parent agent already has a specialized skill (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/config/skills`, `plugins/*/skills`, `builtin/skills`), **never re-install it**.
-   - Pass `"skill": ["<skill-name>"]` in `plan.json` (or `--skill <skill-name>` on `agent_run.py run`, or the exact `SKILL.md` file path in a native sub-agent's prompt). `agent_run.py` automatically injects the parent's `SKILL.md` path and mounts the skill directory (`--add-dir <dir>`) so the child agent can read it directly.
-3. **Ephemeral Skill Sandbox (`skill_sandbox.py` — Only When Parent Lacks the Skill):**
+   - Pass `"skills": ["<skill-name>"]` in `plan.json` (or `--skill <skill-name>` on `agent_run.py run`, or the exact `SKILL.md` file path in a native sub-agent's prompt). `agent_run.py` automatically injects the parent's `SKILL.md` path and mounts the skill directory (`--add-dir <dir>`) so the child agent can read it directly.
+5. **Ephemeral Skill Sandbox (`skill_sandbox.py` — Only When Parent Lacks the Skill):**
    - If a specialized skill is genuinely missing from the machine (`skill_sandbox.py check <keyword>`), search curated high-trust sources (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, `obra/superpowers`, or GitHub repos with `>= 50` stars) via `skill_sandbox.py search <query>`.
    - **Mandatory User Consent + Static Security Audit:** Present the candidate repo, star count, trust tier, and target sandbox path (`~/.agent-orchestration/sandbox-skills/<name>`) to the user and **ask for approval before installing**.
    - Once approved, run `skill_sandbox.py install <repo> [--subpath <dir>] --name <slug> --approved-by-user`. The skill is scanned for dangerous patterns and stored strictly inside `agent-orchestration`'s own ephemeral memory (zero impact on global host directories), and can be deleted at any time via `skill_sandbox.py remove <slug>` or `skill_sandbox.py purge [--expired]`.
-4. **Disjoint Write Scopes (`--may-write` / `--worktree`):** When multiple workers modify files in parallel, assign strictly disjoint `may_write` paths (or `"worktree": true` / Antigravity `Workspace="branch"`).
-5. **Hardware-Aware Concurrency (`probe_hardware()`):** `agent_run.py batch plan.json` automatically measures live CPU cores, free RAM, disk space, and GPU VRAM to cap `wip` safely.
+6. **Hardware-Capped Multi-Wave Execution & 4x Junction Close-Up (`agent_run.py batch --audit` & `anatomy.py inspect`):**
+   - `agent_run.py batch plan.json --audit` executes wave by wave (`Wave 0`, `Wave 1`, ...) capped by live CPU cores, free RAM, disk space, and GPU VRAM (`probe_hardware()`), automatically wiring upstream `result.json` into downstream `context_file` mounts between waves.
+   - After execution, `audit_batch_junctions()` (`anatomy.py inspect plan.json`) runs a **4x Junction Check** across every producer→consumer seam to verify all declared `outputs` exist on disk and surface any `assumptions_challenged`, `open_questions`, or `evidence_warnings`.
