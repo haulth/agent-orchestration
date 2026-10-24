@@ -22,9 +22,9 @@
 8. **Dynamic Model Discovery (never rely on stale hardcoded lists):** `discover.py` probes live models across all 3 harnesses (`agy models`, `~/.codex/.codex-global-state.json`, `~/.claude/cache/model-catalog/*` & `gateway-models.json`), and `route.py` scores and selects the best live model per tier automatically (`source: dynamic_discovered`).
 9. **Epistemic Independence = Different Model Family (or Single-Host Clean-Context + Alt Family/Lens):** An independent reviewer (`review`, `security-review`, `critique`) must come from a different model family (`openai` vs `google` vs `anthropic`) than the builder (`route.py --builder <vendor>` enforces this). If only 1 agent exists on the machine (`--single-host`), `route.py` automatically switches to an intra-host alternate model family (e.g., `agy` switching from `gemini-4-argon-high` to `claude-opus-5-5-high`) + **Zero-Prior Clean-Context Sub-Agent**.
 10. **Empirical Huddle (Spike before Debate, Synthesis Option C):** When panelists disagree on a testable fact, run a 2-minute micro-spike/command to measure the truth instead of running another prose debate round. On design trade-offs, ask panelists to synthesize a better **Option C**.
-11. **Clean-Context Parallel Sub-Agents & Specialized Skills (works across vendors OR on 1 agent / 1 model):**
-    - **Zero-Prior (Blinded) Briefs:** Never leak your unverified hunch into a sub-agent's prompt; pass only symptoms, constraints, and `file:line` facts so your current conversation tokens cannot bias the sub-agent into overconfident confirmation.
-    - **Delegate Domain Depth to Specialized Skills (`--skill`):** Use `route.py --list-skills` (or `route.py --need <keyword>`) to discover installed specialized skills (`literature-search-arxiv`, `pubmed-database`, `pymol`, etc.) and attach them via `--skill <name>` in `agent_run.py run` or `batch` (`"skill": ["..."]`).
+11. **Parent-to-Child Skill Path Sharing & Ephemeral Skill Sandbox (`--skill` + `skill_sandbox.py`):**
+    - **Rule 1 — Share Parent Skill Paths First (Never Re-Install What You Can Read):** `route.py --list-skills` scans all parent/host skill directories (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/config/skills`, `plugins/*/skills`, `builtin/skills`). When a parent agent has a matching skill, pass `--skill <name>` in `agent_run.py run`/`batch` (or pass the `SKILL.md` path directly in a native sub-agent's brief). `agent_run.py` automatically injects the `SKILL.md` path and mounts the skill directory (`--add-dir`) so child agents read it directly without installing anything.
+    - **Rule 2 — Ephemeral Skill Sandbox (`~/.agent-orchestration/sandbox-skills/`):** Only when NO local parent skill covers the task, run `skill_sandbox.py search <query>` to search curated high-trust registries (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, `obra/superpowers`, or verified GitHub repos with `>= 50` stars). **Always ask the user for approval first**, then run `skill_sandbox.py install <repo> [--subpath ...] --approved-by-user`. The skill is security-scanned and stored strictly inside `agent-orchestration`'s own ephemeral sandbox memory (never touching system/global folders) and can be deleted anytime via `skill_sandbox.py remove <name>` or `skill_sandbox.py purge`.
 
 ---
 
@@ -53,6 +53,14 @@ python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
 # 5. Hardware-Capped Parallel Batch Execution (runs independent read/write packages in parallel)
 python <skill>/scripts/agent_run.py batch plan.json
+
+# 6. Ephemeral Skill Sandbox (ONLY when parent agent lacks a needed skill; MUST ask user before install)
+python <skill>/scripts/skill_sandbox.py check <keyword>
+python <skill>/scripts/skill_sandbox.py search <query> --min-stars 50
+python <skill>/scripts/skill_sandbox.py install <owner/repo> [--subpath <dir>] --name <slug> --approved-by-user
+python <skill>/scripts/skill_sandbox.py list
+python <skill>/scripts/skill_sandbox.py remove <slug>
+python <skill>/scripts/skill_sandbox.py purge [--expired]
 ```
 
 ### B. Unified Cross-Agent Runner (`agent_run.py`)

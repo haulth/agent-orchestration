@@ -473,21 +473,48 @@ def intra_host_alt_family_model(vendor, avoid_family, tier_name="frontier", mode
     return None, None
 
 
-def list_installed_skills():
-    """Scan all installed specialized skills across ~/.agents/skills, ~/.claude/skills,
-    ~/.gemini/config/skills, and ~/.gemini/config/plugins/*/skills so the orchestrator can
-    delegate domain-specific tasks to specialized skills instead of reinventing domain logic."""
+def sandbox_skills_dir():
+    """Isolated ephemeral skill memory owned by agent-orchestration. Never touches global host directories."""
+    custom = os.environ.get("AO_SANDBOX_DIR")
+    d = Path(custom) if custom else (ao_home() / "sandbox-skills")
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def list_installed_skills(include_sandbox=True, project_dir=None):
+    """Scan all skills readable by the parent agent across host directories (~/.agents/skills,
+    ~/.claude/skills, ~/.codex/skills, ~/.gemini/config/skills, plugins, builtin) plus the
+    ephemeral skill sandbox (~/.agent-orchestration/sandbox-skills).
+    Parent skills are prioritized first so existing readable skills are shared via path without re-installing."""
     home = Path.home()
     roots = [
-        home / ".agents" / "skills",
-        home / ".claude" / "skills",
-        home / ".gemini" / "config" / "skills",
-        home / ".gemini" / "antigravity" / "builtin" / "skills",
+        (home / ".agents" / "skills", "parent_host"),
+        (home / ".claude" / "skills", "parent_host"),
+        (home / ".codex" / "skills", "parent_host"),
+        (home / ".codex" / "superpowers" / "skills", "parent_host"),
+        (home / ".gemini" / "config" / "skills", "parent_host"),
+        (home / ".gemini" / "antigravity" / "builtin" / "skills", "parent_builtin"),
     ]
     for pdir in glob.glob(str(home / ".gemini" / "config" / "plugins" / "*" / "skills")):
-        roots.append(Path(pdir))
+        roots.append((Path(pdir), "parent_plugin"))
+    if project_dir:
+        proj = Path(project_dir)
+        for rel in (".agents/skills", ".claude/skills", "skills"):
+            if (proj / rel).exists():
+                roots.append((proj / rel, "project_local"))
+    if include_sandbox:
+        sdir = sandbox_skills_dir()
+        if sdir.exists():
+            roots.append((sdir, "ephemeral_sandbox"))
+        local_sb = Path(__file__).resolve().parent.parent / ".sandbox-skills"
+        if local_sb.exists():
+            roots.append((local_sb, "ephemeral_sandbox"))
+
     skills = {}
-    for r in roots:
+    for r, scope in roots:
         if not r.exists():
             continue
         candidates = list(r.glob("*/SKILL.md"))
@@ -513,23 +540,43 @@ def list_installed_skills():
             except OSError:
                 pass
             if sname != "agent-orchestration" and sname not in skills:
-                skills[sname] = {"name": sname, "path": str(smd), "description": desc}
+                skills[sname] = {
+                    "name": sname,
+                    "path": str(smd.resolve()),
+                    "dir": str(sdir.resolve()),
+                    "scope": scope,
+                    "description": desc,
+                }
     return sorted(skills.values(), key=lambda x: x["name"])
 
 
-def resolve_skill_path(name_or_path):
-    """Resolve a skill name (e.g. 'literature-search-arxiv', 'pubmed-database') or path to its SKILL.md."""
+def resolve_skill_info(name_or_path, project_dir=None):
+    """Resolve a skill name or path to its full metadata dict {'name', 'path', 'dir', 'scope', 'description'}."""
     p = Path(name_or_path)
     if p.exists():
-        return str((p / "SKILL.md") if p.is_dir() and (p / "SKILL.md").exists() else p.resolve())
-    skills = {s["name"]: s for s in list_installed_skills()}
+        smd = (p / "SKILL.md") if p.is_dir() and (p / "SKILL.md").exists() else p
+        return {
+            "name": smd.parent.name.replace("_", "-"),
+            "path": str(smd.resolve()),
+            "dir": str(smd.parent.resolve()),
+            "scope": "direct_path",
+            "description": "",
+        }
+    all_skills = list_installed_skills(include_sandbox=True, project_dir=project_dir)
+    by_name = {s["name"].lower(): s for s in all_skills}
     norm = name_or_path.strip().lower().replace("_", "-")
-    if norm in skills:
-        return skills[norm]["path"]
-    for k, info in skills.items():
-        if norm in k.lower():
-            return info["path"]
+    if norm in by_name:
+        return by_name[norm]
+    for k, info in by_name.items():
+        if norm in k:
+            return info
     return None
+
+
+def resolve_skill_path(name_or_path, project_dir=None):
+    """Resolve a skill name (e.g. 'literature-search-arxiv', 'pubmed-database') or path to its SKILL.md."""
+    info = resolve_skill_info(name_or_path, project_dir=project_dir)
+    return info["path"] if info else None
 
 
 def match_installed_skills(keywords, limit=5):

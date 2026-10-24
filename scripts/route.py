@@ -108,10 +108,11 @@ def cmd_list_skills(as_json=False):
     if as_json:
         print(json.dumps(skills, indent=2))
         return 0
-    print(f"## Installed Specialized Skills ({len(skills)} found)")
+    print(f"## Readable Specialized Skills on Parent/Sandbox ({len(skills)} found — share path via --skill, do NOT re-install)")
     for s in skills:
-        desc = (s["description"] or "")[:95]
-        print(f"  - {s['name']:36s} -> {s['path']}  ({desc})")
+        desc = (s["description"] or "")[:85]
+        scope = s.get("scope", "parent_host")
+        print(f"  - {s['name']:36s} [{scope:17s}] -> {s['path']}  ({desc})")
     return 0
 
 
@@ -264,6 +265,14 @@ def route(a):
     rec_wip = hw["recommended_wip"]
     search_terms = list(a.need or []) + [a.task_type, task_name]
     matched_skills = ao.match_installed_skills(search_terms, limit=5)
+    matched_blob = " ".join(f"{s['name']} {s.get('description', '')}".lower() for s in matched_skills)
+    unmatched_needs = [kw for kw in (a.need or []) if kw.lower() not in matched_blob]
+    sandbox_hint = None
+    if unmatched_needs:
+        q_str = " ".join(unmatched_needs)
+        sandbox_hint = (f"No local parent skill matched {unmatched_needs}. Search trusted ephemeral sandbox candidates via: "
+                        f"`python {Path(__file__).resolve().parent / 'skill_sandbox.py'} search \"{q_str}\"` "
+                        f"(ASK USER FOR APPROVAL before running `skill_sandbox.py install ... --approved-by-user`).")
     skill_flags = "".join(f" --skill {s['name']}" for s in matched_skills[:2])
     batch_cmd = f"python {Path(__file__).resolve().parent / 'agent_run.py'} batch plan.json --wip {rec_wip}"
     fanout_guide = {
@@ -271,7 +280,7 @@ def route(a):
                 f"`invoke_subagent(Model='inherit', Workspace='{'branch' if writes and hw['worktree_safe'] else 'inherit'}')` "
                 f"with clean KV-cache (Zero-Prior Briefs)"
                 + (" & disjoint `--may-write` scopes" if writes else "")
-                + (f" + specialized skills ({', '.join(s['name'] for s in matched_skills[:3])})" if matched_skills else "")
+                + (f" + share parent skill paths ({', '.join(s['name'] + ' -> ' + s['path'] for s in matched_skills[:2])})" if matched_skills else "")
                 + f", OR run `{batch_cmd}`."),
         "claude": (f"Parallel sub-agents (hardware-capped wip={rec_wip}): spawn up to {rec_wip} parallel "
                    f"`Agent(subagent_type='general-purpose', model='{tcfg['model']}'"
@@ -294,6 +303,8 @@ def route(a):
                hardware=hw,
                recommended_wip=rec_wip,
                matched_skills=matched_skills,
+               unmatched_needs=unmatched_needs,
+               sandbox_skill_hint=sandbox_hint,
                batch_command=batch_cmd,
                parallel_fanout=fanout_guide)
     if task.get("panel") or single_host_req:
@@ -327,8 +338,10 @@ def render(o):
     if o.get("hardware"):
         lines.append("hardware: " + o["hardware"]["summary"])
     if o.get("matched_skills"):
-        s_str = ", ".join(f"{s['name']} ({s['path']})" for s in o["matched_skills"])
-        lines.append(f"specialized skills matched (delegate domain depth via --skill): {s_str}")
+        s_str = ", ".join(f"{s['name']} [{s.get('scope', 'parent')}] ({s['path']})" for s in o["matched_skills"])
+        lines.append(f"parent/sandbox skills matched (share path via --skill, DO NOT re-install): {s_str}")
+    if o.get("sandbox_skill_hint"):
+        lines.append("skill sandbox: " + o["sandbox_skill_hint"])
     if o.get("panel"):
         label = ("same-model parallel panel" if o.get("same_model") else
                  ("single-host intra-family panel" if o.get("single_host") else "panel (one per vendor)"))

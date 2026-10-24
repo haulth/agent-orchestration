@@ -390,9 +390,12 @@ def _inject_context_and_skills(brief_bytes, context_files, skills, project):
     """Append Shared Blackboard files (--context-file) and Specialized Skills (--skill) to the brief copy."""
     lines = []
     if skills:
-        lines.append("\n\n## Attached Specialized Skills (Read each SKILL.md and follow its domain workflow)")
-        for sp in skills:
-            lines.append(f"- `{sp}`")
+        lines.append("\n\n## Attached Specialized Skills (Shared directly from Parent Agent — read SKILL.md directly, DO NOT re-install)")
+        for sinfo in skills:
+            if isinstance(sinfo, dict):
+                lines.append(f"- **{sinfo['name']}** (`{sinfo.get('scope', 'parent')}`): Read `{sinfo['path']}` (skill folder `{sinfo['dir']}` is already mounted & readable)")
+            else:
+                lines.append(f"- `{sinfo}`")
     if context_files:
         lines.append("\n\n## Shared Blackboard / Upstream Artifacts (read directly as needed)")
         for cf in context_files:
@@ -417,11 +420,12 @@ def run_one(a):
     resolved_skills = []
     skill_dirs = set()
     for s in (a.skill or []):
-        sp = ao.resolve_skill_path(s)
-        if not sp:
-            raise Usage(f"specialized skill '{s}' not found; run 'route.py --list-skills' to see installed skills")
-        resolved_skills.append(sp)
-        skill_dir = str(Path(sp).parent.resolve())
+        sinfo = ao.resolve_skill_info(s, project_dir=a.cd)
+        if not sinfo:
+            raise Usage(f"specialized skill '{s}' not found on parent agent or sandbox; run 'route.py --list-skills' "
+                        f"or search trusted ephemeral sandbox skills via 'skill_sandbox.py search {s}' (ask user before installing)")
+        resolved_skills.append(sinfo)
+        skill_dir = sinfo["dir"]
         skill_dirs.add(skill_dir)
         if skill_dir not in a.add_dir:
             a.add_dir.append(skill_dir)
