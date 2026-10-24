@@ -247,15 +247,17 @@ def route(a):
             break
 
     council = ao.expert_council_for_task(task_name)
+    hw = ao.probe_hardware()
+    rec_wip = hw["recommended_wip"]
     same_model_panel = [f"{v}/{tcfg['model']} [{lobj['lens']}" + (" (WRITE)" if lobj.get("writes") else "") + "]"
-                        for lobj in council["lenses"][:4]]
-    scope_args = " --scope core:src/core/ --scope api:src/api/ [--worktree]" if writes else ""
+                        for lobj in council["lenses"][:min(4, rec_wip)]]
+    scope_args = " --scope core:src/core/ --scope api:src/api/" + (" --worktree" if writes and hw["worktree_safe"] else "") if writes else ""
     parallel_cmd = (f"python {Path(__file__).resolve().parent / 'agent_run.py'} parallel "
-                    f"--brief BRIEF.md --task-type {task_name}{scope_args} --agent {v} --model {tcfg['model']} [--execute]")
+                    f"--brief BRIEF.md --task-type {task_name}{scope_args} --agent {v} --model {tcfg['model']} --wip {rec_wip} [--execute]")
     fanout_guide = {
-        "agy": f"Parallel sub-agents: call `define_subagent(EnableWriteTools={bool(writes)})` + 2-4 parallel `invoke_subagent(Model='inherit', Workspace='{'branch' if writes else 'inherit'}')` with Zero-Prior Briefs" + (" & disjoint `--may-write` scopes" if writes else "") + f", OR run `{parallel_cmd}`.",
-        "claude": f"Parallel sub-agents: call 2-4 parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}'" + (", isolation='worktree'" if writes else "") + f")`, OR run `{parallel_cmd}`.",
-        "codex": f"Parallel sub-agents: call 2-4 parallel `spawn_agent` on `{tcfg['model']}`, OR run `{parallel_cmd}`."
+        "agy": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call `define_subagent(EnableWriteTools={bool(writes)})` + up to {rec_wip} parallel `invoke_subagent(Model='inherit', Workspace='{'branch' if writes and hw['worktree_safe'] else 'inherit'}')` with Zero-Prior Briefs" + (" & disjoint `--may-write` scopes" if writes else "") + f", OR run `{parallel_cmd}`.",
+        "claude": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call up to {rec_wip} parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}'" + (", isolation='worktree'" if writes and hw["worktree_safe"] else "") + f")`, OR run `{parallel_cmd}`.",
+        "codex": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call up to {rec_wip} parallel `spawn_agent` on `{tcfg['model']}`, OR run `{parallel_cmd}`."
     }.get(v, "")
 
     out.update(vendor=v, native=native, tier=tname, model=tcfg["model"], effort=tcfg.get("effort"),
@@ -266,6 +268,8 @@ def route(a):
                escalation=ladder, command=cmd, fallback=models["vendors"][v]["fallback_model"],
                overhead_tokens=ext[v]["overhead_tokens"],
                writes=bool(writes),
+               hardware=hw,
+               recommended_wip=rec_wip,
                expert_lenses=council["lenses"],
                debias_rules=council["debias_rules"],
                planning_workflow=council["planning_workflow"],
@@ -304,6 +308,8 @@ def render(o):
     lines += [f"fallback: {o['fallback']}   escalate (max 3 attempts total): " +
               (" -> ".join(o["escalation"]) or "take over"),
               f"verify: {o['verify']}   {ov}"]
+    if o.get("hardware"):
+        lines.append("hardware: " + o["hardware"]["summary"])
     if o.get("panel"):
         label = ("same-model sub-agent panel" if o.get("same_model") else
                  ("single-host multi-lens panel" if o.get("single_host") else "panel (one per vendor)"))

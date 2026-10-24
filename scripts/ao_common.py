@@ -3,6 +3,7 @@
 State folder (shared by every installed copy of the skill): %USERPROFILE%\\.agent-orchestration
 (override with AO_HOME): ledger.jsonl, capabilities.json, capabilities.md, changes.md.
 """
+import ctypes
 import glob
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +37,99 @@ def now():
 
 def load_models():
     return json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+
+
+def probe_hardware():
+    """Inspect real-time machine hardware (CPU cores, available RAM, disk space, and optional GPU VRAM)
+    using Python stdlib only. Computes safe parallel worker limit (`recommended_wip`) so parallel
+    sub-agents never OOM or thrash the machine."""
+    cpu_cores = os.cpu_count() or 2
+    ram_total_gb, ram_avail_gb, ram_used_pct = 8.0, 4.0, 50
+
+    if os.name == "nt":
+        try:
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                ram_total_gb = round(stat.ullTotalPhys / (1024 ** 3), 1)
+                ram_avail_gb = round(stat.ullAvailPhys / (1024 ** 3), 1)
+                ram_used_pct = int(stat.dwMemoryLoad)
+        except Exception:
+            pass
+    elif Path("/proc/meminfo").exists():
+        try:
+            mem = Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace")
+            mt = re.search(r"^MemTotal:\s+(\d+)\s+kB", mem, re.M)
+            ma = re.search(r"^MemAvailable:\s+(\d+)\s+kB", mem, re.M)
+            if mt and ma:
+                ram_total_gb = round(int(mt.group(1)) / (1024 ** 2), 1)
+                ram_avail_gb = round(int(ma.group(1)) / (1024 ** 2), 1)
+                ram_used_pct = int(round((1.0 - ram_avail_gb / max(0.1, ram_total_gb)) * 100))
+        except OSError:
+            pass
+
+    try:
+        du = shutil.disk_usage(Path.cwd())
+        disk_free_gb = round(du.free / (1024 ** 3), 1)
+    except OSError:
+        disk_free_gb = 20.0
+
+    gpu_info = None
+    if shutil.which("nvidia-smi"):
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                parts = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")]
+                if len(parts) >= 4:
+                    gpu_info = f"{parts[0]} ({parts[2]}/{parts[1]} MiB free, {parts[3]}% util)"
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    # Reserve ~2.0 GB RAM for OS/IDE; budget ~1.5 GB RAM and 2 logical threads per parallel agent worker
+    by_ram = max(1, int(max(0.0, ram_avail_gb - 2.0) // 1.5))
+    by_cpu = max(1, cpu_cores // 2)
+    rec_wip = max(1, min(6, by_ram, by_cpu))
+
+    if ram_avail_gb < 2.5 or ram_used_pct >= 90:
+        pressure = "critical"
+        rec_wip = 1
+    elif ram_avail_gb < 4.5 or ram_used_pct >= 82:
+        pressure = "high"
+        rec_wip = min(2, rec_wip)
+    else:
+        pressure = "normal"
+
+    worktree_safe = disk_free_gb >= 3.0 and pressure != "critical"
+    gpu_str = f", GPU: {gpu_info}" if gpu_info else ""
+    summary = (f"{cpu_cores} logical cores, {ram_avail_gb}/{ram_total_gb} GB RAM free ({ram_used_pct}% used), "
+               f"{disk_free_gb} GB disk free{gpu_str} -> pressure: {pressure}, safe parallel wip: {rec_wip}")
+    return {
+        "cpu_cores": cpu_cores,
+        "ram_total_gb": ram_total_gb,
+        "ram_avail_gb": ram_avail_gb,
+        "ram_used_pct": ram_used_pct,
+        "disk_free_gb": disk_free_gb,
+        "gpu": gpu_info,
+        "pressure": pressure,
+        "recommended_wip": rec_wip,
+        "worktree_safe": worktree_safe,
+        "summary": summary
+    }
 
 
 def _ver_key(p):
@@ -544,14 +639,18 @@ def build_same_model_council(task_name, problem_text, agent="agy", model_slug=No
                 }
             })
 
+    hw = probe_hardware()
+    safe_wip = min(len(batch_pkgs), hw["recommended_wip"])
     batch_file = out_path / "batch_plan.json"
-    batch_file.write_text(json.dumps({"wip": len(batch_pkgs), "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
+    batch_file.write_text(json.dumps({"wip": safe_wip, "hardware": hw, "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
 
     native_file = out_path / "native_subagents.json"
     native_file.write_text(json.dumps({
         "agent": agent,
         "same_model": model_slug,
-        "note": "Launch these sub-agents in parallel in a single turn. All use the SAME model with clean KV-cache isolation and orthogonal expert lenses.",
+        "recommended_wip": safe_wip,
+        "hardware": hw["summary"],
+        "note": f"Launch up to {safe_wip} sub-agents in parallel per hardware capacity ({hw['summary']}). All use the SAME model with clean KV-cache isolation and orthogonal expert lenses.",
         "subagents": native_calls
     }, indent=2), encoding="utf-8")
 
@@ -585,6 +684,8 @@ def build_same_model_council(task_name, problem_text, agent="agy", model_slug=No
         "agent": agent,
         "same_model": model_slug,
         "task_type": canon_t,
+        "recommended_wip": safe_wip,
+        "hardware": hw,
         "brief_files": brief_paths,
         "batch_plan": str(batch_file),
         "native_subagents": str(native_file),
@@ -779,15 +880,19 @@ def build_dev_plan(spec_text, modules=None, test_scope="tests/", agent="codex", 
     rpath.write_text(rtext, encoding="utf-8")
     brief_files.append(str(rpath))
 
+    hw = probe_hardware()
+    safe_wip = min(len(batch_pkgs), hw["recommended_wip"])
     batch_file = out_path / "batch_plan.json"
-    batch_file.write_text(json.dumps({"wip": len(batch_pkgs), "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
+    batch_file.write_text(json.dumps({"wip": safe_wip, "hardware": hw, "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
 
     native_file = out_path / "native_subagents.json"
     native_file.write_text(json.dumps({
         "agent": agent,
         "same_model": model_slug,
+        "recommended_wip": safe_wip,
+        "hardware": hw["summary"],
         "interface_contract": str(contract_file),
-        "note": "Write-enabled Builder + Tester sub-agents with disjoint --may-write scopes (or isolated branches/worktrees).",
+        "note": f"Write-enabled Builder + Tester sub-agents with disjoint --may-write scopes (safe parallel wip={safe_wip} per hardware: {hw['summary']}).",
         "subagents": native_calls
     }, indent=2), encoding="utf-8")
 
@@ -795,6 +900,8 @@ def build_dev_plan(spec_text, modules=None, test_scope="tests/", agent="codex", 
         "dev_dir": str(out_path),
         "agent": agent,
         "model": model_slug,
+        "recommended_wip": safe_wip,
+        "hardware": hw,
         "interface_contract": str(contract_file),
         "modules": [{"name": k, "may_write": v} for k, v in parsed_mods],
         "test_scope": test_scope,

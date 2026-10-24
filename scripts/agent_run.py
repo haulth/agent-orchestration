@@ -571,7 +571,10 @@ def cmd_batch(a):
     guard_depth(a.allow_spawn)
     plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
     pkgs = plan["packages"] if isinstance(plan, dict) else plan
-    wip = a.wip or (plan.get("wip") if isinstance(plan, dict) else None) or 3
+    hw = ao.probe_hardware()
+    plan_wip = (plan.get("wip") if isinstance(plan, dict) else None) or 3
+    wip = a.wip or min(plan_wip, hw["recommended_wip"])
+    print(f"[hardware] {hw['summary']} -> active parallel wip={wip}")
     base = dict(agent=None, brief=None, name=None, out=None, model=None, effort=None, mode=None, cd=None,
                 may_write=[], add_dir=[], context_file=[], worktree=False, search=False, bare=False,
                 max_budget_usd=None, timeout=900, schema=str(DEFAULT_SCHEMA), resume=None,

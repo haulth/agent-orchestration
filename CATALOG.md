@@ -7,7 +7,7 @@
 ## 1. Ten Golden Rules (How Agents Collaborate)
 
 1. **Delegate only when it pays:** Multi-agent runs cost ~5x–15x chat tokens; external CLI calls add ~12.5k (`codex`) to ~19.5k (`agy`) fixed overhead. Do tiny tasks (`<3` tool calls) yourself or via native subagents.
-2. **Unified Parallel Decomposition (`parallel` / `batch`):** Any complex task (research, design, debugging, code implementation, testing) is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`).
+2. **Hardware-Aware Unified Parallel Decomposition (`parallel` / `batch`):** Any complex task (research, design, debugging, code implementation, testing) is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`). **Always respect machine hardware (`ao_common.probe_hardware()`):** parallel `wip` is automatically throttled by available CPU cores, free RAM (`~1.5 GB` per worker + `2.0 GB` OS reserve), GPU VRAM, and free disk space so parallel runs never OOM or thrash swap.
 3. **Three Brief Modes (match ceremony to uncertainty):**
    - `tight` (4 lines: Intent/Done, Context, Scope, Output) → lookups, mechanical edits, small tests.
    - `guided` (Role lens, Intent, DoD, Context, Latitude, Finish line, Scope) → features, code review, docs.

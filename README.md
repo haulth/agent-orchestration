@@ -6,7 +6,7 @@ Skill điều phối đa agent và sub-agent (`Claude Code`, `Codex CLI`, `Antig
 - **Tự động nhận diện model mới nhất (0 token):** Quét trực tiếp model khả dụng trên máy (`route.py --list-models`) và chọn model phù hợp nhất theo độ khó tác vụ.
 - **3 chế độ giao việc (`tight` / `guided` / `exploratory`):** Việc nhỏ giao gọn 4 dòng; việc chuẩn có lăng kính vai trò & tiêu chí nghiệm thu; việc mở cho phép tự do lần theo dấu vết và phản biện giả định sai (`assumptions_challenged`).
 - **Luật bằng chứng (`No Proof = No Claim`):** Mọi kết luận và phản biện bắt buộc kèm dẫn chứng kiểm chứng được (`file:line`, `command -> output`, số liệu đo đạc).
-- **Phân việc độc lập chạy song song (`parallel` / `batch` — dùng được cả trên 1 agent hoặc cùng 1 model):** Không phân biệt là nghiên cứu, phản biện hay viết code phát triển hệ thống — mọi bài toán lớn đều tách thành các sub-agent chạy **song song** với ngữ cảnh sạch (`Zero-Prior Brief` — không mớm trước giả thuyết), dùng chung tài liệu ngữ cảnh (`--context-file`), và phân vùng `--may-write` tách biệt (hoặc `--worktree`) khi có ghi file.
+- **Phân việc độc lập chạy song song theo phần cứng máy (`parallel` / `batch` — dùng được cả trên 1 agent hoặc cùng 1 model):** Không phân biệt là nghiên cứu, phản biện hay viết code phát triển hệ thống — mọi bài toán lớn đều tách thành các sub-agent chạy **song song** với ngữ cảnh sạch (`Zero-Prior Brief` — không mớm trước giả thuyết), dùng chung tài liệu ngữ cảnh (`--context-file`), và phân vùng `--may-write` tách biệt (hoặc `--worktree`) khi có ghi file. Hệ thống tự động đo **CPU cores, RAM trống, ổ cứng và GPU VRAM** theo thời gian thực (`probe_hardware()`) để giới hạn số luồng song song (`recommended_wip`), tránh tràn RAM hoặc treo máy.
 
 ## Lệnh sử dụng nhanh
 

@@ -39,7 +39,7 @@ Four principles drive every rule below:
 6. **Issue work orders & connect the Shared Blackboard** (`references/brief-and-budget.md`):
    - Pick the brief mode (`tight` 4-line brief for lookups/small edits; `guided` for standard builds/reviews; `exploratory` for debugging, research, and design).
    - **Avoid lossy manager relays:** when Worker B builds on or reviews Worker A's work, pass Worker A's artifact/diff directly via `--context-file <path>` (or native `send_message`) instead of re-summarizing it yourself.
-7. **Run and wait.** Launch independent thinking/read-only packages in parallel (WIP limit 3–5). Use `--name <slug>` for descriptive run folders while keeping `--task-type` canonical (`review`, `implement`, `explore`, `debug`...). Never poll or fabricate results.
+7. **Run and wait (Hardware-Aware Parallelism).** Launch independent packages in parallel (`agent_run.py parallel` / `batch` or native sub-agents), automatically scaling concurrency (`wip`) to the machine's live CPU cores, free RAM, GPU VRAM, and disk headroom (`ao_common.probe_hardware()`). Use `--name <slug>` for descriptive run folders while keeping `--task-type` canonical (`review`, `implement`, `explore`, `debug`...). Never poll or fabricate results.
 8. **Accept once, on evidence & epistemic signals** (`references/verification.md`):
    - Check `assumptions_challenged`, `open_questions`, and `handoff_notes` alongside `status` and `evidence`. If a worker disproved a flawed assumption in your brief with solid evidence, **reward that discovery** and pivot the plan.
    - Run cheap deterministic checks (tests, lint, grep, bounded git diff) before LLM judgment.
