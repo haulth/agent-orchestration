@@ -80,6 +80,24 @@ def probe_hardware():
                 ram_used_pct = int(round((1.0 - ram_avail_gb / max(0.1, ram_total_gb)) * 100))
         except OSError:
             pass
+    elif shutil.which("sysctl") and shutil.which("vm_stat"):
+        try:
+            r_tot = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=1.5)
+            r_vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=1.5)
+            if r_tot.returncode == 0 and r_vm.returncode == 0:
+                ram_total_gb = round(int(r_tot.stdout.strip()) / (1024 ** 3), 1)
+                ps_m = re.search(r"page size of (\d+) bytes", r_vm.stdout)
+                page_sz = int(ps_m.group(1)) if ps_m else 4096
+                free_pages = 0
+                for key in ("Pages free", "Pages inactive", "Pages speculative"):
+                    m_pg = re.search(rf"^{key}:\s+(\d+)", r_vm.stdout, re.M)
+                    if m_pg:
+                        free_pages += int(m_pg.group(1))
+                if free_pages > 0:
+                    ram_avail_gb = round((free_pages * page_sz) / (1024 ** 3), 1)
+                    ram_used_pct = int(round((1.0 - ram_avail_gb / max(0.1, ram_total_gb)) * 100))
+        except Exception:
+            pass
 
     try:
         du = shutil.disk_usage(Path.cwd())
@@ -852,6 +870,9 @@ def check_invariant_drift(invariants, file_paths, project_dir=None):
         except OSError:
             continue
         for lno, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith(("#", "//", "/*", "*", "<!--")):
+                continue
             for inv in norm_invs:
                 op = inv["op"]
                 key = inv["key"]
@@ -865,14 +886,14 @@ def check_invariant_drift(invariants, file_paths, project_dir=None):
                             f"FORBID_VIOLATION: {rel_path}:{lno} contains forbidden pattern '{expected_raw}'"
                         )
                 else:
-                    # Match assignments: KEY = val, "KEY": val, KEY: val, const KEY = val
-                    pat = rf"""(?:^|[\s"'\b]){re.escape(key)}["']?\s*(?::=|=|:)\s*("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b[A-Za-z0-9_.-]+\b)"""
+                    # Match assignments including typed Python/TS: KEY: int = val, KEY = val, "KEY": val
+                    pat = (
+                        rf"""(?:^|[\s"']|\b){re.escape(key)}["']?"""
+                        rf"""(?:(?:\s*:\s*[A-Za-z_][A-Za-z0-9_\[\]|, ]*)?\s*(?::=|=)\s*|\s*:\s*(?![^=\n]*=))"""
+                        rf"""("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b[A-Za-z0-9_.-]+\b)"""
+                    )
                     m = re.search(pat, line)
                     if not m:
-                        continue
-                    # Ignore comments or markdown bullet descriptions of the invariant itself
-                    stripped = line.lstrip()
-                    if stripped.startswith(("#", "//", "/*", "*", "<!--")):
                         continue
                     actual_tok = m.group(1).strip()
                     act_num, act_str = _normalize_scalar(actual_tok)
@@ -904,7 +925,7 @@ def check_invariant_drift(invariants, file_paths, project_dir=None):
 
 def detect_cross_package_conflicts(settled_pkgs, results_by_name, project_dir=None, invariants=None):
     """Detect when one package changes a shared constant/parameter/config key while other packages
-    silently use a different/old value ('1 ông thay, mấy ông khác nín thin dẫn đến xung đột')."""
+    silently use a different/old value."""
     proj = Path(project_dir or ".").resolve()
     norm_invs = [parse_invariant_spec(x) for x in (invariants or [])]
     watched_keys = {x["key"] for x in norm_invs if x["op"] == "="}
@@ -912,7 +933,9 @@ def detect_cross_package_conflicts(settled_pkgs, results_by_name, project_dir=No
     # Track key -> list of (pkg_name, value_str, rel_file, line_no)
     key_sightings = {}
     assign_re = re.compile(
-        r"""^\s*(?:export\s+|const\s+|let\s+|var\s+|final\s+)?["']?([A-Z][A-Z0-9_]{3,}|[A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?::=|=|:)\s*("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b(?:true|false|True|False|[A-Za-z0-9_.-]+)\b)"""
+        r"""^\s*(?:export\s+|const\s+|let\s+|var\s+|final\s+)?["']?([A-Z][A-Z0-9_]{3,}|[A-Za-z_][A-Za-z0-9_.-]*)["']?"""
+        r"""(?:(?:\s*:\s*[A-Za-z_][A-Za-z0-9_\[\]|, ]*)?\s*(?::=|=)\s*|\s*:\s*(?![^=\n]*=))"""
+        r"""("[^"]+"|'[^']+'|[-+]?\d+(?:\.\d+)?|\b(?:true|false|True|False|[A-Za-z0-9_.-]+)\b)"""
     )
 
     for p in settled_pkgs:

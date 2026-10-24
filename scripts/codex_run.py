@@ -135,7 +135,9 @@ def main():
     if a.sandbox == "danger-full-access":
         print("warning: danger-full-access requires explicit user approval", file=sys.stderr)
 
-    codex = shutil.which("codex")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import ao_common as ao
+    codex = ao.resolve_exe("codex") or shutil.which("codex")
     if not codex:
         sys.exit("codex CLI not found on PATH")
 
@@ -172,7 +174,11 @@ def main():
     except subprocess.TimeoutExpired:
         timed_out = True
         kill_tree(proc)
-        out_b, err_b = proc.communicate()
+        try:
+            out_b, err_b = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out_b, err_b = b"", b"[runner: process tree did not release its pipes after kill]"
     code = proc.returncode if not timed_out else -1
     log = (out_b or b"").decode("utf-8", "replace") + (err_b or b"").decode("utf-8", "replace")
     duration = round(time.time() - start, 1)

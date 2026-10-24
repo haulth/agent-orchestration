@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,8 +13,8 @@ import ao_common as ao  # noqa: E402
 
 
 def _parse_pkg_spec(spec: str) -> dict:
-    """Parse --pkg name[:brief_mode[:deps[:may_write[:skills[:outputs]]]]]."""
-    parts = spec.split(":")
+    """Parse --pkg name[:brief_mode[:deps[:may_write[:skills[:outputs]]]]] safely preserving Windows drive letters."""
+    parts = re.split(r":(?![\\/])", spec)
     name = (parts[0] if len(parts) > 0 else "").strip()
     if not name:
         raise ValueError(f"Invalid --pkg spec '{spec}': missing package name")
@@ -303,6 +304,41 @@ def cmd_amend(a: argparse.Namespace) -> int:
     return 0 if res["ok"] else 1
 
 
+def _locate_pkg_meta(results_dir: Path, proj: Path, pkg: dict) -> dict | None:
+    """Locate meta.json/result.json for a package across explicit `out`, `<results_dir>/<name>`,
+    and `<proj>/.orch/runs/<name>-*/attempt-*` (used by `agent_run.py batch`)."""
+    name = pkg["name"]
+    candidates: list[Path] = []
+    if pkg.get("out"):
+        out_p = Path(pkg["out"]) if Path(pkg["out"]).is_absolute() else (proj / pkg["out"])
+        candidates.append(out_p)
+    candidates.append(results_dir / name)
+    for runs_root in (results_dir / "runs", proj / ".orch" / "runs"):
+        if runs_root.exists():
+            matched = sorted(runs_root.glob(f"{name}-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            candidates.extend(matched)
+
+    for cand in candidates:
+        if not cand.exists():
+            continue
+        # Check attempt-* subdirectories (latest attempt first)
+        attempts = sorted(
+            [d for d in cand.glob("attempt-*") if d.is_dir() and d.name.split("-")[-1].isdigit()],
+            key=lambda x: int(x.name.split("-")[-1]),
+            reverse=True,
+        )
+        for d in [*attempts, cand]:
+            mfile = d / "meta.json"
+            if mfile.exists():
+                try:
+                    return json.loads(mfile.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    return {"run_dir": str(d)}
+            if (d / "result.json").exists():
+                return {"run_dir": str(d)}
+    return None
+
+
 def cmd_inspect(a: argparse.Namespace) -> int:
     proj = Path(a.project_dir).resolve()
     pfile = Path(a.plan_file).resolve()
@@ -311,15 +347,9 @@ def cmd_inspect(a: argparse.Namespace) -> int:
     results_dir = Path(a.results_dir).resolve() if a.results_dir else pfile.parent
     results_by_name: dict[str, dict] = {}
     for p in settled["packages"]:
-        pdir = results_dir / p["name"]
-        mfile = pdir / "meta.json"
-        if mfile.exists():
-            try:
-                results_by_name[p["name"]] = json.loads(mfile.read_text(encoding="utf-8-sig"))
-            except Exception:
-                results_by_name[p["name"]] = {"run_dir": str(pdir)}
-        elif (pdir / "result.json").exists():
-            results_by_name[p["name"]] = {"run_dir": str(pdir)}
+        found = _locate_pkg_meta(results_dir, proj, p)
+        if found:
+            results_by_name[p["name"]] = found
     junctions = ao.audit_batch_junctions(settled["packages"], results_by_name, proj, plan=plan)
     if a.json:
         print(json.dumps(junctions, indent=2))

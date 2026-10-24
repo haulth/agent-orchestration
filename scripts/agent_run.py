@@ -361,7 +361,7 @@ def build_claude(j):
                   "status (done|partial|blocked|stopped), summary (with [E1]/file:line citations), "
                   "deliverables[], evidence[] (verifiable file:line or command output), risks[], "
                   "next_action; optional keys confidence (low|med|high), assumptions_challenged[] "
-                  "(must cite proof), open_questions[], handoff_notes.\n")
+                  "(must cite proof), open_questions[], handoff_notes, truth_amendments[].\n")
     return cmd, brief.encode("utf-8")
 
 
@@ -619,7 +619,9 @@ def cmd_batch(a):
 
     meta_by_name = {}
     worst = 0
-    for w_idx, w_pkgs in enumerate(settled["waves"]):
+    w_idx = 0
+    while w_idx < len(settled["waves"]):
+        w_pkgs = settled["waves"][w_idx]
         specs = []
         for i, p in enumerate(w_pkgs):
             d = {**base, **{k: v for k, v in p.items() if k in base}}
@@ -639,7 +641,8 @@ def cmd_batch(a):
 
         writers = [s for s in specs if s["mode"] == "write" and not s.get("worktree")]
         for s in specs:
-            s["_peer_write_scopes"] = [p for w in writers if w["_name"] != s["_name"] for p in (w.get("may_write") or [])]
+            peer_raw = [p for w in writers if w["_name"] != s["_name"] for p in (w.get("may_write") or [])]
+            s["_peer_write_scopes"] = norm_scopes(peer_raw, proj_dir) if peer_raw else []
 
         def go(s):
             failed_deps = [dep for dep in s["_depends_on"] if not (meta_by_name.get(dep) or {}).get("ok")]
@@ -706,6 +709,7 @@ def cmd_batch(a):
                 print("Run `anatomy.py amend <plan.json> --set KEY=VAL --evidence \"...\"` (or pass `--auto-amend`) so all packages stay synchronized.")
                 worst = max(worst, 2)
                 break
+        w_idx += 1
 
     junc = ao.audit_batch_junctions(settled["packages"], meta_by_name, project_dir=proj_dir, plan=plan)
     print(f"[junctions 4x] missing_outputs={len(junc['missing_outputs'])} "

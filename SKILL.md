@@ -1,5 +1,7 @@
 ---
 name: agent-orchestration
+version: 1.0.0
+license: MIT
 description: Manage subagents like a professional manager and coordinate intelligent multi-agent collaboration with low token cost. It covers whether to delegate at all, choosing a team shape, picking the right brief mode (tight, guided, or exploratory so structure never limits agent intelligence), routing to the right model family and vendor (Claude subagents, Codex CLI, Antigravity/agy, `claude -p`), sharing context directly via a Shared Blackboard (`--context-file`) and native peer messaging, running constructive & empirical huddles, and accepting results on evidence. Use it whenever a task could be split across agents or models, whenever you consider spawning subagents, running work in parallel, handing a task to Codex, Antigravity or Claude, getting a second opinion or independent review, or coordinating a multi-step job.
 ---
 
@@ -9,7 +11,7 @@ description: Manage subagents like a professional manager and coordinate intelli
 
 You are the manager and integration owner. Workers own the deliverables and investigations you assign them. You set clear goals and safety boundaries up front, empower workers to think independently and challenge flawed premises, connect them directly to upstream artifacts so nuance is never lost, and judge results once on verifiable evidence.
 
-Four principles drive every rule below:
+Six principles drive every rule below:
 1. **Multi-agent work has a real token cost — delegate only where it pays.**
    - Published figures: multi-agent systems spend ~5x–15x the tokens of single-turn chat, and external CLI calls carry fixed cold-start overhead (~12.5k tokens on `codex`, ~19.5k on `agy`).
    - Delegate only when **parallelism**, **context protection**, **epistemic independence** (a clean-context reviewer from a different model family), or **specialized capability** beats the cost of briefing and verification.
@@ -26,7 +28,7 @@ Four principles drive every rule below:
    - **Size It First (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Name the scale up front. If a plan exceeds 8 packages (`Epic`), **stop and propose a `Hero` slice (`<=8` packages) first** unless the user explicitly approves the Epic (`--allow-epic`).
    - **Truth First & Keyhole Invariant Locks (`truth_contract` + `--invariant` + `truth_hash`):** Lock user prerequisites, constants, and threshold bounds (`--invariant "PORT=8080" --invariant "MAX_LATENCY_MS<=200" --invariant "must:verify_jwt" --invariant "forbid:eval("`) in `.orch/truth-contract.md` and `plan.json` with a SHA-256 keyhole digest (`truth_hash`). Workers are write-locked out of `truth-contract.md` so no single worker can silently drift from user prerequisites.
    - **Settle & Audit to Zero (`anatomy.py init|settle|audit`):** `ao_common.settle_plan()` solves topological execution waves (`Wave 0, Wave 1, ...`) and auto-wires `truth_contract` + upstream `outputs` into downstream `context_file` mounts. `ao_common.audit_plan()` proves **0 structural & interlock defects** across 8 checks (`clearance`, `cycles`, `terminals`, `support`, `stand_in_briefs`, `skill_mounts`, `truth_contract`, and `interlocks`).
-   - **Anti-Silent-Mutation & Change-Ripple Protocol (`truth_amendments` + `anatomy.py amend` + Wave Interlock Gate):** Never allow one worker to change a shared constant/threshold while sibling workers "stay silent" (`nín thin`) on the old value. After each wave/batch, `check_invariant_drift()` and `detect_cross_package_conflicts()` scan deliverables for threshold drift (`INVARIANT_DRIFT` / `THRESHOLD_VIOLATION`) and conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). When a threshold genuinely must change, a worker emits `truth_amendments` with proof (`evidence`), and `anatomy.py amend` (or `batch --auto-amend`) increments `truth_version`, broadcasts `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flags already-run packages that used the old value as `stale_packages` requiring re-sync.
+   - **Anti-Silent-Mutation & Change-Ripple Protocol (`truth_amendments` + `anatomy.py amend` + Wave Interlock Gate):** Never allow one worker to change a shared constant/threshold while sibling workers silently remain on the old value. After each wave/batch, `check_invariant_drift()` and `detect_cross_package_conflicts()` scan deliverables for threshold drift (`INVARIANT_DRIFT` / `THRESHOLD_VIOLATION`) and conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). When a threshold genuinely must change, a worker emits `truth_amendments` with proof (`evidence`), and `anatomy.py amend` (or `batch --auto-amend`) increments `truth_version`, broadcasts `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flags already-run packages that used the old value as `stale_packages` requiring re-sync.
    - **1x Macro & 4x Junction Close-Ups (`anatomy.py inspect`):** Post-flight inspection across every producer→consumer seam checking `missing_outputs`, `invariant_violations`, `cross_package_conflicts`, `truth_amendments`, `assumptions_challenged`, `open_questions`, and `evidence_warnings`.
 6. **De-Biased Parallel Sub-Agents, Parent-to-Child Skill Path Sharing & Ephemeral Skill Sandbox (`references/multi-perspective-and-single-host.md`).**
    - In a single session, your own prior tokens create **autoregressive confirmation bias** (making you overconfident in your initial hunch). Even when only **one agent** or **one model** is used (`--single-host` / `--same-model`), break out of context bias by spawning **clean-context parallel sub-agents** (`invoke_subagent`, `Agent()`, or `agent_run.py batch`) with **Zero-Prior (Blinded) Briefs** (passing only verified facts, symptoms, and `file:line` pointers—never leaking your unverified hypothesis).
@@ -81,7 +83,7 @@ Protocol in 5 steps:
 
 **Models are dynamically discovered, never locked to stale hardcoded strings:**
 - `discover.py` probes live available models across all 3 harnesses at zero token cost (`agy models`, `~/.codex/.codex-global-state.json` & `latest-model.md`, `~/.claude/settings.json`, `gateway-models.json`, and `model-catalog/*-ccd.json`).
-- `route.py` (`ao_common.dynamic_tier_config`) analyzes and scores the live discovered models to select the best model per tier (`fast`, `standard`, `frontier`, `frontier_max`) automatically (`source: dynamic_discovered`), using `assets/models.json` only as a fallback baseline.
+- `route.py` (`ao_common.dynamic_tier_config`) analyzes and scores the live discovered models to select the best model per tier (`fast`, `standard`, `frontier`, `frontier_max`) automatically (`source: live_discovered`), using `assets/models.json` only as a fallback baseline.
 
 Match the work to the model family's cognitive strengths:
 - **OpenAI (`codex`):** surgical logic, deep debugging, methodological/statistical auditing, refactoring, non-interactive `codex review`, `--worktree`, and `--search`.

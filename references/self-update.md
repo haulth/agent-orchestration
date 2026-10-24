@@ -17,7 +17,7 @@ Agents evolve rapidly: new models (`claude-opus-5-5`, `nghi/claude-opus-5[1m]`, 
    - **Claude Code CLI (`claude`):** Scans `~/.claude/settings.json` (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, etc.), `~/.claude/cache/gateway-models.json` (`nghi/claude-opus-5[1m]`, `nghi/claude-sonnet-5[1m]`), and `~/.claude/cache/model-catalog/*-ccd.json` (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`).
    - **Antigravity CLI (`agy`):** Runs `agy models` (`gemini-4-argon-{low,medium,high}`, `gemini-3.8-flash-*`, `claude-opus-5-5-*`, `claude-sonnet-5-5-*`).
 2. **Dynamic Scoring & Tier Selection (`ao_common.dynamic_tier_config`):**
-   - Whenever `route.py` or `agent_run.py --tier <T>` runs, it reads the live discovered models for that agent from `capabilities.json`, scores them by capability family, version number, and context window (e.g. `[1m]`), and picks the optimal live model for `fast`, `standard`, `frontier`, or `frontier_max` (`model_source: dynamic_discovered`).
+   - Whenever `route.py` or `agent_run.py --tier <T>` runs, it reads the live discovered models for that agent from `capabilities.json`, scores them by capability family, version number, and context window (e.g. `[1m]`), and picks the optimal live model for `fast`, `standard`, `frontier`, or `frontier_max` (`source: live_discovered`).
    - `assets/models.json` serves only as the fallback baseline if `discover.py` has never been run on the machine.
 
 ## The protocol

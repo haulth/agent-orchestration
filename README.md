@@ -47,9 +47,20 @@ python <skill>/scripts/skill_sandbox.py remove <name>
 python <skill>/scripts/skill_sandbox.py purge [--expired]
 ```
 
-## Cài đặt
+## Cài đặt & Sử dụng qua NPX
+
+```bash
+# Cách 1: Cài qua chuẩn Agent Skills CLI (Claude Code, Codex, Antigravity, Cursor...)
+npx skills add haulth/agent-orchestration
+
+# Cách 2: Chạy trực tiếp trình cài đặt / kiểm tra hệ thống qua NPX (0 dependencies)
+npx github:haulth/agent-orchestration
+npx github:haulth/agent-orchestration doctor
+```
+
+Hoặc cài từ bản clone nội bộ:
 ```powershell
-.\install\install.ps1   # Windows (đồng bộ vào ~/.claude, ~/.agents, ~/.gemini/config)
+.\install\install.ps1   # Windows (đồng bộ vào ~/.claude, ~/.agents, ~/.codex, ~/.gemini/config)
 ```
 ```bash
 ./install/install.sh    # macOS / Linux

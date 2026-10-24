@@ -4,7 +4,7 @@
 
 ---
 
-## 1. Ten Golden Rules (How Agents Collaborate)
+## 1. Twelve Golden Rules (How Agents Collaborate)
 
 1. **Delegate only when it pays:** Multi-agent runs cost ~5x–15x chat tokens; external CLI calls add ~12.5k (`codex`) to ~19.5k (`agy`) fixed overhead. Do tiny tasks (`<3` tool calls) yourself or via native subagents.
 2. **Hardware-Aware Parallel Orchestration & Specialized Skill Delegation (`batch` + `--skill`):** Any complex task is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), attached domain-specific skills (`--skill <skill_name>`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`). **Do not reinvent domain workflows inside orchestration:** attach installed specialized skills (`route.py --list-skills`) so workers follow domain-grade tools and instructions. **Always respect machine hardware (`ao_common.probe_hardware()`):** parallel `wip` is automatically throttled by available CPU cores, free RAM (`~1.5 GB` per worker + `2.0 GB` OS reserve), GPU VRAM, and free disk space.
@@ -19,7 +19,7 @@
    - Unbacked skepticism is just a worry (`risks[]`), never a valid objection or blocker.
    - `agent_run.py` automatically audits envelopes and flags `evidence_warnings` in `meta.json` when claims lack concrete anchors.
 7. **Shared Blackboard (`--context-file`) over Lossy Manager Relay:** Never summarize a 10-page upstream artifact into 3 sentences for the next agent. Pass `--context-file <path>` so downstream agents read upstream findings/diffs directly.
-8. **Dynamic Model Discovery (never rely on stale hardcoded lists):** `discover.py` probes live models across all 3 harnesses (`agy models`, `~/.codex/.codex-global-state.json`, `~/.claude/cache/model-catalog/*` & `gateway-models.json`), and `route.py` scores and selects the best live model per tier automatically (`source: dynamic_discovered`).
+8. **Dynamic Model Discovery (never rely on stale hardcoded lists):** `discover.py` probes live models across all 3 harnesses (`agy models`, `~/.codex/.codex-global-state.json`, `~/.claude/cache/model-catalog/*` & `gateway-models.json`), and `route.py` scores and selects the best live model per tier automatically (`source: live_discovered`).
 9. **Epistemic Independence = Different Model Family (or Single-Host Clean-Context + Alt Family/Lens):** An independent reviewer (`review`, `security-review`, `critique`) must come from a different model family (`openai` vs `google` vs `anthropic`) than the builder (`route.py --builder <vendor>` enforces this). If only 1 agent exists on the machine (`--single-host`), `route.py` automatically switches to an intra-host alternate model family (e.g., `agy` switching from `gemini-4-argon-high` to `claude-opus-5-5-high`) + **Zero-Prior Clean-Context Sub-Agent**.
 10. **Empirical Huddle (Spike before Debate, Synthesis Option C):** When panelists disagree on a testable fact, run a 2-minute micro-spike/command to measure the truth instead of running another prose debate round. On design trade-offs, ask panelists to synthesize a better **Option C**.
 11. **Parent-to-Child Skill Path Sharing & Ephemeral Skill Sandbox (`--skill` + `skill_sandbox.py`):**
@@ -30,7 +30,7 @@
     - **Size It First (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Name the scale up front. If `>8` packages (`Epic`), stop and propose a `Hero` slice (`<=8` packages) first unless the user explicitly approves the Epic.
     - **Truth Lock & Keyhole Invariants (`truth_contract` + `--invariant` + `truth_hash`):** Lock user prerequisites and thresholds (`KEY=VAL`, `KEY<=VAL`, `KEY>=VAL`, `must:PAT`, `forbid:PAT`) in `.orch/truth-contract.md` and `plan.json` with a SHA-256 `truth_hash`. Workers cannot write to `truth_contract` directly.
     - **Settle & Audit to Zero (`anatomy.py init|settle|audit` & `agent_run.py batch --audit`):** Solves topological execution waves (`Wave 0, Wave 1, ...`), wires upstream `outputs` + `result.json` into downstream `context_file` mounts, and proves **0 problems** across 8 checks (`clearance`, `cycles`, `terminals`, `support`, `stand_in_briefs`, `skill_mounts`, `truth_contract`, `interlocks`).
-    - **Change-Ripple Protocol & Anti-Silent-Conflict (`anatomy.py amend` & `batch --auto-amend`):** Prevents "1 worker changes a parameter while others stay silent (`nín thin`)". After each wave, `check_invariant_drift()` and `detect_cross_package_conflicts()` halt the pipeline if any worker violates a locked threshold (`INVARIANT_DRIFT` / `THRESHOLD_VIOLATION`) or defines conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). Formal changes require `truth_amendments` with proof (`evidence`), triggering `anatomy.py amend` to increment `truth_version`, mount `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flag already-run packages with the old value as `stale_packages`.
+    - **Change-Ripple Protocol & Anti-Silent-Conflict (`anatomy.py amend` & `batch --auto-amend`):** Prevents one worker from changing a parameter while sibling workers silently remain on the old value. After each wave, `check_invariant_drift()` and `detect_cross_package_conflicts()` halt the pipeline if any worker violates a locked threshold (`INVARIANT_DRIFT` / `THRESHOLD_VIOLATION`) or defines conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). Formal changes require `truth_amendments` with proof (`evidence`), triggering `anatomy.py amend` to increment `truth_version`, mount `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flag already-run packages with the old value as `stale_packages`.
     - **1x Macro & 4x Junction Close-Ups (`anatomy.py inspect`):** Post-flight check across every seam verifying `missing_outputs`, `invariant_violations`, `cross_package_conflicts`, `truth_amendments`, `assumptions_challenged`, `open_questions`, and `evidence_warnings`.
 
 ---
@@ -138,6 +138,7 @@ Every worker returns one JSON object:
   - `assumptions_challenged`: `["Brief assumed X, but src/foo.py:88 proves Y"]`
   - `open_questions`: `["Emergent lead found in src/bar.py:19"]`
   - `handoff_notes`: `"Direct technical notes/invariants for the next agent"`
+  - `truth_amendments`: `[{"key": "PORT", "old_value": "8080", "proposed_value": "9090", "reason": "...", "evidence": "..."}]`
 
 ---
 

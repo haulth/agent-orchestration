@@ -1,0 +1,45 @@
+{
+  "name": "agent-orchestration",
+  "version": "1.0.0",
+  "description": "Multi-agent orchestration skill & CLI engine for Claude Code, Codex CLI, and Antigravity (agy) with Orchestration Anatomy, Keyhole Interlocks, Dynamic Model Routing, and Ephemeral Skill Sandbox.",
+  "license": "MIT",
+  "author": "haulth",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haulth/agent-orchestration.git"
+  },
+  "homepage": "https://github.com/haulth/agent-orchestration#readme",
+  "bugs": {
+    "url": "https://github.com/haulth/agent-orchestration/issues"
+  },
+  "bin": {
+    "agent-orchestration": "./bin/cli.mjs",
+    "ao-skill": "./bin/cli.mjs"
+  },
+  "files": [
+    "SKILL.md",
+    "CATALOG.md",
+    "README.md",
+    "LICENSE",
+    "bin/",
+    "scripts/",
+    "references/",
+    "assets/",
+    "install/"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "agent-skills",
+    "skills",
+    "claude-code",
+    "codex",
+    "antigravity",
+    "agy",
+    "multi-agent",
+    "orchestration",
+    "anatomy"
+  ]
+}

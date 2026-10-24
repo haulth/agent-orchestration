@@ -1,6 +1,6 @@
 {
-  "updated": "2026-10-24",
-  "note": "Source of truth for tiers and task routing. references/gates-and-routing.md mirrors it. route.py reads it; discover.py never edits it (new models it finds go to ~/.agent-orchestration/candidates.json until a person promotes them here).",
+  "updated": "2026-10-25",
+  "note": "Baseline fallback tiers and task routing rules. Dynamic live discovery (`discover.py` -> `ao_common.dynamic_tier_config`) automatically scores and selects live available models from `~/.agent-orchestration/capabilities.json` (`source: live_discovered`), falling back to this file when no live snapshot is present.",
   "tier_order": ["fast", "standard", "frontier", "frontier_max"],
   "risk_floor": {"low": "fast", "med": "standard", "high": "frontier"},
   "vendors": {
