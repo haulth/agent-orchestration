@@ -40,7 +40,12 @@ python <skill>/scripts/route.py --task-type design --manager agy --same-model  #
 # 2) Sinh Hội đồng Chuyên gia Đa Góc nhìn trên CÙNG 1 Model (Zero-Prior Briefs + Orthogonal Lenses)
 python <skill>/scripts/agent_run.py council --brief brief.md --agent agy --model gemini-4-argon-high --task-type design
 
-# 3) Chạy worker (codex | agy | claude), kèm tên gợi nhớ (--name) và Bảng đen chung (--context-file)
+# 3) Chế độ Giao việc Viết Code & Phát triển Hệ thống Đa Module (Frozen Interface + Disjoint Write Builders + Test Builder + Reviewer)
+python <skill>/scripts/route.py --task-type system-dev --manager agy --same-model
+python <skill>/scripts/agent_run.py dev --brief spec.md --module core:src/core/ --module api:src/api/ \
+       --test-scope tests/ --agent codex --model gpt-6.1-sol [--worktree] [--execute]
+
+# 4) Chạy 1 worker đơn lẻ (codex | agy | claude), kèm tên gợi nhớ (--name) và Bảng đen chung (--context-file)
 python <skill>/scripts/agent_run.py run --agent codex --brief brief.md --name review-p1-core \
        --task-type review --mode read --context-file .orch/design-spec.md
 

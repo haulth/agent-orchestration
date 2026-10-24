@@ -420,9 +420,26 @@ def expert_council_for_task(task_name):
             {"lens": "First-Principles Architect", "mandate": "Evaluate structural soundness, invariants, and synthesize a stronger Option C.", "falsify": "What false dichotomy is the current framing locked into?"},
             {"lens": "Adversarial Red-Team Falsifier", "mandate": "Try to disprove the leading option with hard repo evidence (`file:line`) or empirical counterexamples.", "falsify": "What is the fatal flaw everyone is being too polite or anchored to notice?"},
             {"lens": "Domain & Pragmatic Realist", "mandate": "Assess scientific/domain validity, implementation cost, and user-facing impact.", "falsify": "Does this solve the real problem or an imaginary theoretical one?"}
+        ],
+        "implement": [
+            {"lens": "Core / Backend Builder", "writes": True, "mandate": "Implement core domain logic, data models, and state invariants strictly inside assigned `--may-write` scope.", "falsify": "Which boundary input or error path in this module could leave state inconsistent?"},
+            {"lens": "Integration / Consumer / UI Builder", "writes": True, "mandate": "Implement callers, API/CLI endpoints, or UI components against the frozen interface contract (`.orch/interface-contract.md`).", "falsify": "Does any signature or payload mismatch the shared interface contract?"},
+            {"lens": "Zero-Prior Adversarial Test Builder", "writes": True, "mandate": "Write unit, integration, and edge-case tests in `tests/` directly from the spec (without echoing the Builder's shortcuts) and run the suite.", "falsify": "What test case fails if the implementation only handles the happy path?"},
+            {"lens": "Independent Code Reviewer & Integrator", "writes": False, "mandate": "Audit the combined diff against Definition of Done, check cross-module seams, and verify zero regressions.", "falsify": "What existing caller or invariant was silently broken by these changes?"}
+        ],
+        "refactor": [
+            {"lens": "Characterization Test Builder", "writes": True, "mandate": "Lock existing behavior with deterministic tests in `tests/` before structural code edits.", "falsify": "Which subtle side-effect of the legacy code is not yet covered by a test?"},
+            {"lens": "Surgical Refactoring Builder", "writes": True, "mandate": "Restructure the target module cleanly inside `--may-write` while keeping external behavior 100% invariant.", "falsify": "Did any public signature, return type, or exception contract change?"},
+            {"lens": "Regression & Contract Auditor", "writes": False, "mandate": "Verify all callers, imports, and tests pass with zero scope violations.", "falsify": "Where could a downstream caller still reference the old structure?"}
+        ],
+        "test": [
+            {"lens": "Boundary & Happy-Path Tester", "writes": True, "mandate": "Write deterministic unit/integration tests covering all Definition of Done criteria.", "falsify": "Are assertions checking real outputs rather than tautological mocks?"},
+            {"lens": "Adversarial Edge-Case & Fault Tester", "writes": True, "mandate": "Write negative tests for malformed inputs, timeouts, race conditions, and boundary limits.", "falsify": "What input causes an unhandled crash or silent corruption?"}
         ]
     }
     councils["security-review"] = councils["review"]
+    councils["system-dev"] = councils["implement"]
+    councils["mechanical-edit"] = councils["implement"][:2]
     lenses = councils.get(task_name) or councils["explore"]
     return {"lenses": lenses, "debias_rules": debias_rules, "planning_workflow": planning_workflow}
 
@@ -573,6 +590,218 @@ def build_same_model_council(task_name, problem_text, agent="agy", model_slug=No
         "native_subagents": str(native_file),
         "synthesis_template": str(synth_file),
         "lenses": [l["lens"] for l in council["lenses"]]
+    }
+
+
+def build_dev_plan(spec_text, modules=None, test_scope="tests/", agent="codex", model_slug=None,
+                   effort=None, worktree=False, out_dir=None, context_files=None):
+    """Generate a Multi-Module System Development & Code Implementation Plan (`.orch/dev-<ts>/`)
+    with a Frozen Interface Contract, disjoint `--may-write` Builder briefs, a Zero-Prior Test Builder,
+    and an Independent Reviewer (works across vendors OR on a single agent / same model)."""
+    models = load_models()
+    if not model_slug:
+        dcfg = dynamic_tier_config(models, {}, agent, "standard")
+        model_slug = dcfg.get("model") or "inherit"
+        if not effort:
+            effort = dcfg.get("effort")
+    out_path = Path(out_dir) if out_dir else (Path.cwd() / ".orch" / f"dev-{time.strftime('%Y%m%d-%H%M%S')}")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    contract_file = out_path / "interface-contract.md"
+    contract_file.write_text(
+        "# Frozen Interface Contract & Shared Blackboard\n\n"
+        "All parallel/staged Builders and the Test Builder MUST adhere strictly to the signatures, "
+        "data structures, and invariants below. If an interface change is unavoidable, stop and flag it "
+        "in `assumptions_challenged` / `handoff_notes`.\n\n"
+        "## Specification & Invariants\n"
+        f"{spec_text.strip()}\n",
+        encoding="utf-8"
+    )
+    shared_ctx = [str(contract_file)] + list(context_files or [])
+
+    parsed_mods = []
+    for m in (modules or ["core:src/"]):
+        if ":" in m:
+            k, v = m.split(":", 1)
+            parsed_mods.append((re.sub(r"[^a-zA-Z0-9_-]", "-", k.strip()), [p.strip() for p in v.split(",") if p.strip()]))
+        else:
+            slug = re.sub(r"[^a-zA-Z0-9_-]", "-", Path(m.strip()).name or "core")
+            parsed_mods.append((slug, [m.strip()]))
+
+    brief_files = []
+    batch_pkgs = []
+    native_calls = []
+
+    for idx_m, (mname, mpaths) in enumerate(parsed_mods, 1):
+        bpath = out_path / f"pkg-{idx_m}-builder-{mname}.md"
+        scope_str = ", ".join(mpaths)
+        btext = (
+            f"# Guided Builder Brief: Module `{mname}`\n\n"
+            f"## Role\n"
+            f"- **Role:** Module Builder (`{mname}`)\n"
+            f"- **Mandate:** Deliver working, verified production code inside `{scope_str}` adhering strictly to `interface-contract.md`.\n"
+            f"- **Adjacent owners (flag, don't duplicate):** Files outside `{scope_str}` belong to other Builders or the Test Builder. Report cross-boundary issues in `handoff_notes` or `assumptions_challenged`.\n\n"
+            f"## Intent & Specification\n"
+            f"{spec_text.strip()}\n\n"
+            f"## Definition of Done\n"
+            f"1. All code changes stay strictly within `--may-write {scope_str}`.\n"
+            f"2. Public functions/types match `interface-contract.md`.\n"
+            f"3. Run local syntax/type/unit checks and cite exact `file:line` and command output in `evidence[]`.\n\n"
+            f"## Scope & Authority\n"
+            f"- **Mode:** `write` | **May write:** `{scope_str}`\n"
+            f"- **Upstream Contract:** `{contract_file}`\n"
+        )
+        bpath.write_text(btext, encoding="utf-8")
+        brief_files.append(str(bpath))
+
+        pkg = {
+            "name": f"builder-{mname}",
+            "agent": agent,
+            "model": model_slug,
+            "brief": str(bpath),
+            "mode": "write",
+            "may_write": mpaths,
+            "worktree": bool(worktree),
+            "task_type": "implement",
+            "risk": "med",
+            "tier": "standard",
+            "context_file": shared_ctx
+        }
+        if effort:
+            pkg["effort"] = effort
+        batch_pkgs.append(pkg)
+
+        if agent == "agy":
+            native_calls.append({
+                "package": f"builder-{mname}",
+                "mode": "write",
+                "may_write": mpaths,
+                "define_subagent": {
+                    "Name": f"builder-{mname}",
+                    "Description": f"Code Builder for module {mname} (may write: {scope_str})",
+                    "SystemPrompt": f"You are the accountable Builder for module '{mname}'. Write clean production code strictly inside {scope_str} following the Frozen Interface Contract. Run verification checks and cite exact file:line and command output in evidence[].",
+                    "EnableWriteTools": True
+                },
+                "invoke_subagent": {
+                    "TypeName": f"builder-{mname}",
+                    "Role": f"Builder ({mname})",
+                    "Model": "inherit",
+                    "Workspace": "branch" if worktree else "inherit",
+                    "Prompt": btext
+                }
+            })
+        elif agent == "claude":
+            native_calls.append({
+                "package": f"builder-{mname}",
+                "mode": "write",
+                "may_write": mpaths,
+                "Agent": {
+                    "subagent_type": "general-purpose",
+                    "description": f"Builder ({mname})",
+                    "model": model_slug if model_slug in ("haiku", "sonnet", "opus") else "sonnet",
+                    "isolation": "worktree" if worktree else None,
+                    "prompt": btext
+                }
+            })
+        else:
+            native_calls.append({
+                "package": f"builder-{mname}",
+                "mode": "write",
+                "may_write": mpaths,
+                "spawn_agent": {"role": f"Builder ({mname})", "model": model_slug, "prompt": btext}
+            })
+
+    if test_scope:
+        t_idx = len(parsed_mods) + 1
+        tpath = out_path / f"pkg-{t_idx}-tester.md"
+        tpaths = [p.strip() for p in test_scope.split(",") if p.strip()]
+        ttext = (
+            f"# Zero-Prior Adversarial Test Builder Brief\n\n"
+            f"## Role\n"
+            f"- **Role:** Independent QA & Test Builder\n"
+            f"- **Mandate:** Write comprehensive unit, integration, and adversarial edge-case tests in `{test_scope}` directly from `interface-contract.md`, then execute the test suite.\n"
+            f"- **De-Biasing Rule:** Design tests from the specification and failure modes—do NOT write weak tests that merely mirror implementation shortcuts. Do NOT modify production code outside `{test_scope}`.\n\n"
+            f"## Specification Under Test\n"
+            f"{spec_text.strip()}\n\n"
+            f"## Scope & Authority\n"
+            f"- **Mode:** `write` | **May write:** `{test_scope}`\n"
+            f"- **Evidence Required:** Cite test `file:line` and exact test runner output (`pytest` / `unittest`) in `evidence[]`.\n"
+        )
+        tpath.write_text(ttext, encoding="utf-8")
+        brief_files.append(str(tpath))
+        tpkg = {
+            "name": "tester-qa",
+            "agent": agent,
+            "model": model_slug,
+            "brief": str(tpath),
+            "mode": "write",
+            "may_write": tpaths,
+            "worktree": bool(worktree),
+            "task_type": "test",
+            "risk": "med",
+            "tier": "standard",
+            "context_file": shared_ctx
+        }
+        if effort:
+            tpkg["effort"] = effort
+        batch_pkgs.append(tpkg)
+        if agent == "agy":
+            native_calls.append({
+                "package": "tester-qa",
+                "mode": "write",
+                "may_write": tpaths,
+                "define_subagent": {
+                    "Name": "tester-qa",
+                    "Description": f"Zero-Prior Adversarial Test Builder (may write: {test_scope})",
+                    "SystemPrompt": f"You are an independent QA & Test Builder. Write rigorous unit and edge-case tests inside {test_scope} and run the test suite. Never modify production files outside {test_scope}.",
+                    "EnableWriteTools": True
+                },
+                "invoke_subagent": {
+                    "TypeName": "tester-qa",
+                    "Role": "Adversarial Test Builder",
+                    "Model": "inherit",
+                    "Workspace": "branch" if worktree else "inherit",
+                    "Prompt": ttext
+                }
+            })
+
+    r_idx = len(batch_pkgs) + 1
+    rpath = out_path / f"pkg-{r_idx}-reviewer.md"
+    rtext = (
+        f"# Independent Post-Build Code Review Brief\n\n"
+        f"## Role\n"
+        f"- **Role:** Independent Code Reviewer & Integration Auditor\n"
+        f"- **Mandate:** Audit the git diff and test coverage against `interface-contract.md`, checking for logic bugs, interface mismatches, security flaws, and scope violations.\n\n"
+        f"## Scope & Authority\n"
+        f"- **Mode:** `read` (May write: nothing)\n"
+        f"- **Evidence Required:** Every finding MUST cite exact `file:line-line` and verification command output.\n"
+    )
+    rpath.write_text(rtext, encoding="utf-8")
+    brief_files.append(str(rpath))
+
+    batch_file = out_path / "batch_plan.json"
+    batch_file.write_text(json.dumps({"wip": len(batch_pkgs), "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
+
+    native_file = out_path / "native_subagents.json"
+    native_file.write_text(json.dumps({
+        "agent": agent,
+        "same_model": model_slug,
+        "interface_contract": str(contract_file),
+        "note": "Write-enabled Builder + Tester sub-agents with disjoint --may-write scopes (or isolated branches/worktrees).",
+        "subagents": native_calls
+    }, indent=2), encoding="utf-8")
+
+    return {
+        "dev_dir": str(out_path),
+        "agent": agent,
+        "model": model_slug,
+        "interface_contract": str(contract_file),
+        "modules": [{"name": k, "may_write": v} for k, v in parsed_mods],
+        "test_scope": test_scope,
+        "worktree": bool(worktree),
+        "brief_files": brief_files,
+        "batch_plan": str(batch_file),
+        "native_subagents": str(native_file)
     }
 
 

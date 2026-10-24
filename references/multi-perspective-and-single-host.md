@@ -118,8 +118,17 @@ Compare the surviving approaches explicitly before committing:
 | **Key Evidence (`file:line`)** | `[E1] src/core/ a.py:40` | `[E2] src/auth.py:112` | Verified by spike `[E3]` |
 ```
 
-### Stage 5: Plan (Actionable MECE Execution Plan)
-Turn the synthesized option into an execution plan with:
-1. **Ordered / Parallel Work Packages:** Exact files to modify (`--may-write`), keeping write scopes strictly disjoint (MECE).
-2. **Verification Gate per Package (`Definition of Done`):** Exact test or command that proves the package works.
-3. **Reversal Trigger (Anti-Sunk-Cost Guardrail):** State upfront what observable signal during implementation (e.g., *"If step 1 requires changing >3 caller signatures or increases latency >10%"*) will trigger an immediate pivot to the backup approach instead of doubling down on a failing plan.
+### Stage 5: Plan & Execute System Development (`agent_run.py dev`)
+Turn the synthesized option into an executable multi-module development pipeline:
+1. **Frozen Interface Contract (`interface-contract.md`):** Lock shared types, function signatures, and data invariants in `.orch/dev-<ts>/interface-contract.md` so parallel Builders never break each other's assumptions.
+2. **Disjoint Write Builders (`--module name:path/`):** Assign each Builder (`mode: write`, `EnableWriteTools: True`) a strictly disjoint `--may-write` directory (or an isolated branch/worktree via `--worktree` or Antigravity `Workspace="branch"`).
+3. **Zero-Prior Adversarial Test Builder (`--test-scope tests/`):** Assign a separate clean-context sub-agent to write unit/integration/edge-case tests in `tests/` directly from `interface-contract.md` (without seeing the Builder's implementation shortcuts), then run the test suite.
+4. **Independent Post-Build Code Reviewer (`mode: read`):** Audits the combined git diff and test output against the contract.
+5. **Reversal Trigger (Anti-Sunk-Cost Guardrail):** State upfront what observable signal during implementation will trigger an immediate pivot to the backup approach.
+
+```bash
+# Auto-generate (and optionally execute) the full Multi-Module Development Squad:
+python <skill>/scripts/agent_run.py dev --brief SPEC.md \
+       --module core:src/core/ --module api:src/api/ --test-scope tests/ \
+       --agent agy --model gemini-4-argon-high [--worktree] [--execute]
+```

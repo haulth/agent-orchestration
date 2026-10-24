@@ -696,6 +696,27 @@ def cmd_council(a):
     return 0
 
 
+def cmd_dev(a):
+    bp = Path(a.brief)
+    spec_text = bp.read_text(encoding="utf-8") if bp.exists() else a.brief
+    info = ao.build_dev_plan(
+        spec_text=spec_text,
+        modules=a.module or ["core:src/"],
+        test_scope="" if a.no_test else a.test_scope,
+        agent=a.agent,
+        model_slug=a.model,
+        effort=a.effort,
+        worktree=a.worktree,
+        out_dir=a.out,
+        context_files=a.context_file
+    )
+    print(json.dumps(info, indent=2))
+    if a.execute:
+        bns = argparse.Namespace(plan=info["batch_plan"], wip=a.wip, allow_spawn=a.allow_spawn)
+        return cmd_batch(bns)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -759,11 +780,26 @@ def main():
     c.add_argument("--execute", action="store_true", help="immediately run all Same-Model Expert Lenses in parallel via batch")
     c.add_argument("--wip", type=int)
     c.add_argument("--allow-spawn", action="store_true")
+    d = sub.add_parser("dev", help="generate (and optionally run) a Multi-Module Code Implementation & System Development Plan (Frozen Interface + Disjoint Write Builders + Zero-Prior Test Builder + Reviewer)")
+    d.add_argument("--brief", required=True, help="path to specification file or inline feature/system spec")
+    d.add_argument("--module", action="append", default=[], help="module name and write scope as 'name:path1/,path2/' (repeatable, e.g. --module core:src/core/ --module api:src/api/)")
+    d.add_argument("--test-scope", default="tests/", help="write scope for the independent Zero-Prior Test Builder (default: tests/)")
+    d.add_argument("--no-test", action="store_true", help="skip generating a separate Test Builder package")
+    d.add_argument("--agent", default="codex", choices=list(ADAPTERS))
+    d.add_argument("--model", help="model to use across Builders & Tester (defaults to live tier model or 'inherit')")
+    d.add_argument("--effort")
+    d.add_argument("--worktree", action="store_true", help="isolate each Builder in its own git worktree / branch")
+    d.add_argument("--out", help="output directory for generated dev briefs & specs")
+    d.add_argument("--context-file", action="append", default=[])
+    d.add_argument("--execute", action="store_true", help="immediately execute the generated Builder + Tester batch plan")
+    d.add_argument("--wip", type=int)
+    d.add_argument("--allow-spawn", action="store_true")
     a = p.parse_args()
     if a.cmd == "run":
         a.may_write = [x for grp in a.may_write for x in grp]
     try:
-        sys.exit({"run": cmd_run, "batch": cmd_batch, "verdict": cmd_verdict, "stats": cmd_stats, "council": cmd_council}[a.cmd](a))
+        sys.exit({"run": cmd_run, "batch": cmd_batch, "verdict": cmd_verdict, "stats": cmd_stats,
+                  "council": cmd_council, "dev": cmd_dev}[a.cmd](a))
     except Usage as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

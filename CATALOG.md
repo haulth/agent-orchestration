@@ -24,7 +24,11 @@
 10. **Empirical Huddle (Spike before Debate, Synthesis Option C):** When panelists disagree on a testable fact, run a 2-minute micro-spike/command to measure the truth instead of running another prose debate round. On design trade-offs, ask panelists to synthesize a better **Option C**.
 11. **Single-Host De-Biasing & Multi-Horizon Planning (`Diverge → Falsify → Probe → Synthesize → Plan`):**
     - **Zero-Prior (Blinded) Briefs:** Never leak your unverified hunch into a sub-agent's prompt; pass only symptoms, constraints, and `file:line` facts so your current conversation tokens cannot bias the sub-agent into overconfident confirmation.
-    - **Orthogonal Expert Council:** When using sub-agents on a single host (e.g., only Antigravity `agy` via `define_subagent` + `invoke_subagent`), assign opposing Expert Lenses (`First-Principles Architect`, `Adversarial Red-Team Falsifier`, `Pragmatic Simplicity Minimalist`, `Runtime/Failure Engineer`) to explore multiple directions in parallel before locking in an implementation plan.
+    - **Orthogonal Expert Council:** When using sub-agents on a single host or single model (e.g., only Antigravity `agy` via `define_subagent` + `invoke_subagent`), assign opposing Expert Lenses (`First-Principles Architect`, `Adversarial Red-Team Falsifier`, `Pragmatic Simplicity Minimalist`, `Runtime/Failure Engineer`) to explore multiple directions in parallel before locking in an implementation plan.
+12. **Multi-Module Code Implementation & System Development (`agent_run.py dev` / `implement` / `system-dev`):**
+    - **Frozen Interface Contract (`.orch/interface-contract.md`):** Before splitting code implementation across multiple Builders, freeze shared types, signatures, and invariants in `interface-contract.md` and pass it via `--context-file`.
+    - **Disjoint `--may-write` Scopes & Isolated Worktrees:** Give each Builder a strictly disjoint write scope (`--module core:src/core/ --module api:src/api/`) or an isolated branch/worktree (`--worktree` on Codex/Claude, `Workspace: "branch"` on `agy`).
+    - **Zero-Prior Adversarial Test Builder:** Assign a separate clean-context sub-agent to write tests in `tests/` directly from the spec (`interface-contract.md`) so tests are never biased by the Builder's implementation shortcuts.
 
 ---
 
@@ -52,6 +56,11 @@ python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
 # 5. Generate (and optionally run) a Same-Model De-Biased Expert Council (Zero-Prior Briefs + Orthogonal Lenses)
 python <skill>/scripts/agent_run.py council --brief BRIEF.md --agent agy --model gemini-4-argon-high --task-type design
+
+# 6. Multi-Module Code Implementation & System Development (Frozen Contract + Disjoint Write Builders + Zero-Prior Test Builder)
+python <skill>/scripts/route.py --task-type system-dev --manager agy --same-model
+python <skill>/scripts/agent_run.py dev --brief SPEC.md --module core:src/core/ --module api:src/api/ \
+       --test-scope tests/ --agent codex --model gpt-6.1-sol [--worktree] [--execute]
 ```
 
 ### B. Unified Cross-Agent Runner (`agent_run.py`)
