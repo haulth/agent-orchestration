@@ -473,449 +473,86 @@ def intra_host_alt_family_model(vendor, avoid_family, tier_name="frontier", mode
     return None, None
 
 
-def expert_council_for_task(task_name):
-    """Return Orthogonal Expert Lenses + Zero-Prior De-Biasing rules + Multi-Horizon Planning workflow
-    so a single agent (via sub-agents) can explore problems from independent expert viewpoints without
-    context contamination or premature overconfidence."""
-    debias_rules = [
-        "Zero-Prior (Blinded) Brief: Strip your current hypothesis/opinion from the sub-agent prompt; pass ONLY verified facts, symptoms, constraints, and file:line pointers so current conversation tokens cannot bias the sub-agent.",
-        "Clean-Slate Context Isolation: Spawn each sub-agent in a fresh context (`invoke_subagent`, `Agent()`, `spawn_agent`, or CLI) so autoregressive attention does not lock onto your initial tokens.",
-        "Compulsory Pre-Mortem & Falsification: Every sub-agent must state what concrete condition or `file:line` evidence would prove its own proposal/hypothesis WRONG."
+def list_installed_skills():
+    """Scan all installed specialized skills across ~/.agents/skills, ~/.claude/skills,
+    ~/.gemini/config/skills, and ~/.gemini/config/plugins/*/skills so the orchestrator can
+    delegate domain-specific tasks to specialized skills instead of reinventing domain logic."""
+    home = Path.home()
+    roots = [
+        home / ".agents" / "skills",
+        home / ".claude" / "skills",
+        home / ".gemini" / "config" / "skills",
+        home / ".gemini" / "antigravity" / "builtin" / "skills",
     ]
-    planning_workflow = [
-        "1. Diverge (Parallel Zero-Prior Sub-Agents): Spawn 2-4 sub-agents with orthogonal expert lenses to map approaches (A, B, C) independently with file:line citations.",
-        "2. Falsify (Adversarial Red-Team & Pre-Mortem): Challenge each approach for hidden assumptions, edge cases, and failure modes.",
-        "3. Probe (2-Minute Empirical Check): Settle any factual disagreement between approaches with a quick command/test spike instead of prose debate.",
-        "4. Synthesize (Trade-off Matrix -> Option C): Score approaches on root-cause fit, blast radius, risk, cost, and evidence; combine the best elements.",
-        "5. Plan (MECE Execution Packages): Define ordered/parallel steps with disjoint `--may-write` scopes, checkable Definition of Done, and a Reversal Trigger."
-    ]
-    councils = {
-        "design": [
-            {"lens": "First-Principles Architect", "mandate": "Design clean boundaries, data/state invariants, and long-term evolution paths.", "falsify": "Where does coupling or state drift break this structure at scale?"},
-            {"lens": "Adversarial Red-Team Falsifier", "mandate": "Break the proposed design; hunt hidden assumptions, race conditions, security holes, and worst-case inputs.", "falsify": "What single assumption, if false in the real codebase, invalidates the plan?"},
-            {"lens": "Pragmatic Simplicity Minimalist", "mandate": "Solve the root problem with the smallest possible blast radius and zero over-engineering, reusing existing code.", "falsify": "Which proposed components can be deleted while still achieving 100% of the user's goal?"},
-            {"lens": "Runtime & Failure-Mode Engineer", "mandate": "Audit latency, memory, I/O bottlenecks, migration safety, and instant rollback paths.", "falsify": "How does the system behave when an upstream call times out or fails halfway?"}
-        ],
-        "explore": [
-            {"lens": "Architecture & Data-Flow Mapper", "mandate": "Trace end-to-end control flow, entry points, and state mutations with exact file:line anchors.", "falsify": "What implicit caller or side channel bypasses the main path?"},
-            {"lens": "Adversarial Edge-Case & Debt Hunter", "mandate": "Find unknown unknowns, fragile assumptions, tech debt, and silent failure modes.", "falsify": "What looks working on the surface but fails under boundary conditions?"},
-            {"lens": "Pragmatic Solution Strategist", "mandate": "Identify 2-3 distinct implementation directions and compare their blast radius and leverage.", "falsify": "Why might the most obvious approach be a local trap?"}
-        ],
-        "debug": [
-            {"lens": "Primary Hypothesis Prover/Falsifier", "mandate": "Test the leading root-cause hypothesis using direct code trace (`file:line`) and minimal reproduction.", "falsify": "What evidence in the logs or code contradicts this hypothesis?"},
-            {"lens": "Rival Hypothesis & State Auditor", "mandate": "Assume the first hypothesis is a red herring; investigate state mutation, concurrency, env/config, and upstream callers.", "falsify": "Can the exact symptom be reproduced even when the primary suspect is bypassed?"},
-            {"lens": "Empirical Probe & Fix Minimalist", "mandate": "Construct a deterministic test/command that proves the root cause and verify the minimal safe fix.", "falsify": "Does the fix merely mask the symptom instead of curing the root cause?"}
-        ],
-        "review": [
-            {"lens": "Correctness & Invariant Auditor", "mandate": "Verify logic against Definition of Done, data invariants, boundary conditions, and test adequacy.", "falsify": "What input or state transition causes a wrong result or regression?"},
-            {"lens": "Adversarial Security & Failure Skeptic", "mandate": "Audit trust boundaries, permissions, error handling, resource leaks, and failure cascades.", "falsify": "How can untrusted input or partial failure corrupt state?"},
-            {"lens": "Simplicity & Contract Critic", "mandate": "Check cross-module interface contracts, dead code, and unnecessary complexity.", "falsify": "Did this diff break an unspoken assumption of an adjacent caller?"}
-        ],
-        "critique": [
-            {"lens": "First-Principles Architect", "mandate": "Evaluate structural soundness, invariants, and synthesize a stronger Option C.", "falsify": "What false dichotomy is the current framing locked into?"},
-            {"lens": "Adversarial Red-Team Falsifier", "mandate": "Try to disprove the leading option with hard repo evidence (`file:line`) or empirical counterexamples.", "falsify": "What is the fatal flaw everyone is being too polite or anchored to notice?"},
-            {"lens": "Domain & Pragmatic Realist", "mandate": "Assess scientific/domain validity, implementation cost, and user-facing impact.", "falsify": "Does this solve the real problem or an imaginary theoretical one?"}
-        ],
-        "implement": [
-            {"lens": "Core / Backend Builder", "writes": True, "mandate": "Implement core domain logic, data models, and state invariants strictly inside assigned `--may-write` scope.", "falsify": "Which boundary input or error path in this module could leave state inconsistent?"},
-            {"lens": "Integration / Consumer / UI Builder", "writes": True, "mandate": "Implement callers, API/CLI endpoints, or UI components against the frozen interface contract (`.orch/interface-contract.md`).", "falsify": "Does any signature or payload mismatch the shared interface contract?"},
-            {"lens": "Zero-Prior Adversarial Test Builder", "writes": True, "mandate": "Write unit, integration, and edge-case tests in `tests/` directly from the spec (without echoing the Builder's shortcuts) and run the suite.", "falsify": "What test case fails if the implementation only handles the happy path?"},
-            {"lens": "Independent Code Reviewer & Integrator", "writes": False, "mandate": "Audit the combined diff against Definition of Done, check cross-module seams, and verify zero regressions.", "falsify": "What existing caller or invariant was silently broken by these changes?"}
-        ],
-        "refactor": [
-            {"lens": "Characterization Test Builder", "writes": True, "mandate": "Lock existing behavior with deterministic tests in `tests/` before structural code edits.", "falsify": "Which subtle side-effect of the legacy code is not yet covered by a test?"},
-            {"lens": "Surgical Refactoring Builder", "writes": True, "mandate": "Restructure the target module cleanly inside `--may-write` while keeping external behavior 100% invariant.", "falsify": "Did any public signature, return type, or exception contract change?"},
-            {"lens": "Regression & Contract Auditor", "writes": False, "mandate": "Verify all callers, imports, and tests pass with zero scope violations.", "falsify": "Where could a downstream caller still reference the old structure?"}
-        ],
-        "test": [
-            {"lens": "Boundary & Happy-Path Tester", "writes": True, "mandate": "Write deterministic unit/integration tests covering all Definition of Done criteria.", "falsify": "Are assertions checking real outputs rather than tautological mocks?"},
-            {"lens": "Adversarial Edge-Case & Fault Tester", "writes": True, "mandate": "Write negative tests for malformed inputs, timeouts, race conditions, and boundary limits.", "falsify": "What input causes an unhandled crash or silent corruption?"}
-        ]
-    }
-    councils["security-review"] = councils["review"]
-    councils["system-dev"] = councils["implement"]
-    councils["mechanical-edit"] = councils["implement"][:2]
-    lenses = councils.get(task_name) or councils["explore"]
-    return {"lenses": lenses, "debias_rules": debias_rules, "planning_workflow": planning_workflow}
+    for pdir in glob.glob(str(home / ".gemini" / "config" / "plugins" / "*" / "skills")):
+        roots.append(Path(pdir))
+    skills = {}
+    for r in roots:
+        if not r.exists():
+            continue
+        candidates = list(r.glob("*/SKILL.md"))
+        if (r / "SKILL.md").exists():
+            candidates.append(r / "SKILL.md")
+        for smd in candidates:
+            sdir = smd.parent
+            sname = sdir.name.replace("_", "-")
+            if sname == "agent-orchestration" or sname in skills:
+                continue
+            desc = ""
+            try:
+                head = smd.read_text(encoding="utf-8", errors="replace")[:2000]
+                fm = re.match(r"^---\s*\n(.*?)\n---", head, re.S)
+                block = fm.group(1) if fm else head
+                m_name = re.search(r"^name:\s*(.+)$", block, re.M)
+                if m_name:
+                    sname = m_name.group(1).strip().strip("'\"")
+                m_desc = re.search(r"^description:\s*(?:>[-+]?|\|[-+]?)?\s*\n((?:[ \t]+.+\n?)+)|^description:\s*(.+)$", block, re.M)
+                if m_desc:
+                    raw_d = m_desc.group(1) or m_desc.group(2) or ""
+                    desc = " ".join(line.strip() for line in raw_d.splitlines()).strip().strip("'\"")
+            except OSError:
+                pass
+            if sname != "agent-orchestration" and sname not in skills:
+                skills[sname] = {"name": sname, "path": str(smd), "description": desc}
+    return sorted(skills.values(), key=lambda x: x["name"])
 
 
-def build_same_model_council(task_name, problem_text, agent="agy", model_slug=None, effort=None,
-                             out_dir=None, context_files=None):
-    """Generate a complete Same-Model De-Biased Expert Council package (`.orch/council-<ts>/`).
-    Allows a single agent using a SINGLE model (e.g. `Model='inherit'` or one active model) to run
-    2-4 independent sub-agents with Zero-Prior Briefs and Orthogonal Expert Lenses."""
-    models = load_models()
-    canon_t = canonical_task(task_name, models) or "explore"
-    council = expert_council_for_task(canon_t)
-    if not model_slug:
-        dcfg = dynamic_tier_config(models, {}, agent, "frontier")
-        model_slug = dcfg.get("model") or "inherit"
-        if not effort:
-            effort = dcfg.get("effort")
-    out_path = Path(out_dir) if out_dir else (Path.cwd() / ".orch" / f"council-{time.strftime('%Y%m%d-%H%M%S')}-{canon_t}")
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    brief_paths = []
-    batch_pkgs = []
-    native_calls = []
-    for idx_l, lobj in enumerate(council["lenses"], 1):
-        slug = re.sub(r"[^a-z0-9]+", "-", lobj["lens"].lower()).strip("-")
-        bpath = out_path / f"lens-{idx_l}-{slug}.md"
-        sys_prompt = (
-            f"You are operating under the '{lobj['lens']}' expert lens. "
-            f"Mandate: {lobj['mandate']} "
-            f"You have a clean context window intentionally isolated from the lead agent's prior token bias. "
-            f"Do NOT agree politely or assume the problem framing is flawless. "
-            f"Every claim, finding, and conclusion MUST cite verifiable ground-truth evidence (`file:line-line`, "
-            f"`command -> exit/output`, or measured numbers in `evidence[]`). "
-            f"You MUST answer this falsification question with evidence: '{lobj['falsify']}'"
-        )
-        btext = (
-            f"# Zero-Prior Expert Lens Brief ({lobj['lens']})\n\n"
-            f"## Role & Orthogonal Expert Lens\n"
-            f"- **Lens:** {lobj['lens']}\n"
-            f"- **Accountable Mandate:** {lobj['mandate']}\n"
-            f"- **Mandatory Pre-Mortem / Falsification Question:** *{lobj['falsify']}*\n"
-            f"- **De-Biasing Rule:** This brief intentionally omits the manager's unverified hunches so your KV-cache remains uncontaminated. Form your own independent conclusion strictly from code/data evidence.\n\n"
-            f"## Core Problem, Symptoms & Verified Facts\n"
-            f"{problem_text.strip()}\n\n"
-            f"## Exploration & Anti-Hallucination Rules\n"
-            f"- Follow evidence across the codebase (`file:line-line`).\n"
-            f"- If any premise in the problem statement is contradicted by actual code/data, record it in `assumptions_challenged` with proof.\n"
-            f"- Return the JSON result envelope (`status`, `summary`, `confidence`, `deliverables`, `evidence`, `assumptions_challenged`, `open_questions`, `risks`, `next_action`).\n"
-        )
-        bpath.write_text(btext, encoding="utf-8")
-        brief_paths.append(str(bpath))
-
-        pkg = {
-            "name": f"lens-{idx_l}-{slug}",
-            "agent": agent,
-            "model": model_slug,
-            "brief": str(bpath),
-            "mode": "read",
-            "task_type": canon_t,
-            "risk": "med",
-            "tier": "frontier",
-            "context_file": list(context_files or [])
-        }
-        if effort:
-            pkg["effort"] = effort
-        batch_pkgs.append(pkg)
-
-        if agent == "agy":
-            native_calls.append({
-                "lens": lobj["lens"],
-                "define_subagent": {
-                    "Name": f"expert-{slug}",
-                    "Description": f"{lobj['lens']}: {lobj['mandate']}",
-                    "SystemPrompt": sys_prompt,
-                    "EnableWriteTools": False
-                },
-                "invoke_subagent": {
-                    "TypeName": f"expert-{slug}",
-                    "Role": lobj["lens"],
-                    "Model": "inherit",
-                    "Workspace": "inherit",
-                    "Prompt": btext
-                }
-            })
-        elif agent == "claude":
-            native_calls.append({
-                "lens": lobj["lens"],
-                "Agent": {
-                    "subagent_type": "general-purpose",
-                    "description": lobj["lens"],
-                    "model": model_slug if model_slug in ("haiku", "sonnet", "opus") else "opus",
-                    "prompt": btext
-                }
-            })
-        else:
-            native_calls.append({
-                "lens": lobj["lens"],
-                "spawn_agent": {
-                    "role": lobj["lens"],
-                    "model": model_slug,
-                    "prompt": btext
-                }
-            })
-
-    hw = probe_hardware()
-    safe_wip = min(len(batch_pkgs), hw["recommended_wip"])
-    batch_file = out_path / "batch_plan.json"
-    batch_file.write_text(json.dumps({"wip": safe_wip, "hardware": hw, "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
-
-    native_file = out_path / "native_subagents.json"
-    native_file.write_text(json.dumps({
-        "agent": agent,
-        "same_model": model_slug,
-        "recommended_wip": safe_wip,
-        "hardware": hw["summary"],
-        "note": f"Launch up to {safe_wip} sub-agents in parallel per hardware capacity ({hw['summary']}). All use the SAME model with clean KV-cache isolation and orthogonal expert lenses.",
-        "subagents": native_calls
-    }, indent=2), encoding="utf-8")
-
-    synth_file = out_path / "synthesis_plan_template.md"
-    lens_headers = " | ".join(f"Approach {i} ({l['lens']})" for i, l in enumerate(council["lenses"], 1))
-    lens_sep = " | ".join("---" for _ in council["lenses"])
-    synth_file.write_text(
-        f"# Multi-Horizon Synthesis & Implementation Plan ({canon_t})\n\n"
-        f"## 1. Diverge Summary (Independent Clean-Context Sub-Agents on Same Model `{model_slug}`)\n"
-        + "\n".join(f"- **{l['lens']}:** <key finding + file:line evidence>" for l in council["lenses"]) + "\n\n"
-        f"## 2. Falsification & Pre-Mortem (`assumptions_challenged`)\n"
-        f"- **Premises disproved by code/data:** <list with file:line>\n"
-        f"- **Fatal flaws exposed by Red-Team / Minimalist:** <list>\n\n"
-        f"## 3. Empirical Probe Gate (2-Minute Tie-Breaker)\n"
-        f"- **Crux tested:** <command run -> measured output>\n\n"
-        f"## 4. Multi-Criteria Trade-Off Matrix & Option C Synthesis\n\n"
-        f"| Criterion | {lens_headers} | Synthesized Option C (Chosen) |\n"
-        f"| --- | {lens_sep} | --- |\n"
-        f"| **Root-Cause Fit** | | |\n"
-        f"| **Blast Radius (Files)** | | |\n"
-        f"| **Failure / Regression Risk** | | |\n"
-        f"| **Key Evidence (`file:line`)** | | |\n\n"
-        f"## 5. Actionable MECE Execution Plan\n"
-        f"1. **Package 1 (`--may-write <paths>`):** <objective + Definition of Done test>\n"
-        f"2. **Package 2 (`--may-write <paths>`):** <objective + Definition of Done test>\n"
-        f"- **Reversal Trigger:** <observable signal during implementation that triggers an immediate pivot>\n",
-        encoding="utf-8"
-    )
-    return {
-        "council_dir": str(out_path),
-        "agent": agent,
-        "same_model": model_slug,
-        "task_type": canon_t,
-        "recommended_wip": safe_wip,
-        "hardware": hw,
-        "brief_files": brief_paths,
-        "batch_plan": str(batch_file),
-        "native_subagents": str(native_file),
-        "synthesis_template": str(synth_file),
-        "lenses": [l["lens"] for l in council["lenses"]]
-    }
+def resolve_skill_path(name_or_path):
+    """Resolve a skill name (e.g. 'literature-search-arxiv', 'pubmed-database') or path to its SKILL.md."""
+    p = Path(name_or_path)
+    if p.exists():
+        return str((p / "SKILL.md") if p.is_dir() and (p / "SKILL.md").exists() else p.resolve())
+    skills = {s["name"]: s for s in list_installed_skills()}
+    norm = name_or_path.strip().lower().replace("_", "-")
+    if norm in skills:
+        return skills[norm]["path"]
+    for k, info in skills.items():
+        if norm in k.lower():
+            return info["path"]
+    return None
 
 
-def build_dev_plan(spec_text, modules=None, test_scope="tests/", agent="codex", model_slug=None,
-                   effort=None, worktree=False, out_dir=None, context_files=None):
-    """Generate a Multi-Module System Development & Code Implementation Plan (`.orch/dev-<ts>/`)
-    with a Frozen Interface Contract, disjoint `--may-write` Builder briefs, a Zero-Prior Test Builder,
-    and an Independent Reviewer (works across vendors OR on a single agent / same model)."""
-    models = load_models()
-    if not model_slug:
-        dcfg = dynamic_tier_config(models, {}, agent, "standard")
-        model_slug = dcfg.get("model") or "inherit"
-        if not effort:
-            effort = dcfg.get("effort")
-    out_path = Path(out_dir) if out_dir else (Path.cwd() / ".orch" / f"dev-{time.strftime('%Y%m%d-%H%M%S')}")
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    contract_file = out_path / "interface-contract.md"
-    contract_file.write_text(
-        "# Frozen Interface Contract & Shared Blackboard\n\n"
-        "All parallel/staged Builders and the Test Builder MUST adhere strictly to the signatures, "
-        "data structures, and invariants below. If an interface change is unavoidable, stop and flag it "
-        "in `assumptions_challenged` / `handoff_notes`.\n\n"
-        "## Specification & Invariants\n"
-        f"{spec_text.strip()}\n",
-        encoding="utf-8"
-    )
-    shared_ctx = [str(contract_file)] + list(context_files or [])
-
-    parsed_mods = []
-    for m in (modules or ["core:src/"]):
-        if ":" in m:
-            k, v = m.split(":", 1)
-            parsed_mods.append((re.sub(r"[^a-zA-Z0-9_-]", "-", k.strip()), [p.strip() for p in v.split(",") if p.strip()]))
-        else:
-            slug = re.sub(r"[^a-zA-Z0-9_-]", "-", Path(m.strip()).name or "core")
-            parsed_mods.append((slug, [m.strip()]))
-
-    brief_files = []
-    batch_pkgs = []
-    native_calls = []
-
-    for idx_m, (mname, mpaths) in enumerate(parsed_mods, 1):
-        bpath = out_path / f"pkg-{idx_m}-builder-{mname}.md"
-        scope_str = ", ".join(mpaths)
-        btext = (
-            f"# Guided Builder Brief: Module `{mname}`\n\n"
-            f"## Role\n"
-            f"- **Role:** Module Builder (`{mname}`)\n"
-            f"- **Mandate:** Deliver working, verified production code inside `{scope_str}` adhering strictly to `interface-contract.md`.\n"
-            f"- **Adjacent owners (flag, don't duplicate):** Files outside `{scope_str}` belong to other Builders or the Test Builder. Report cross-boundary issues in `handoff_notes` or `assumptions_challenged`.\n\n"
-            f"## Intent & Specification\n"
-            f"{spec_text.strip()}\n\n"
-            f"## Definition of Done\n"
-            f"1. All code changes stay strictly within `--may-write {scope_str}`.\n"
-            f"2. Public functions/types match `interface-contract.md`.\n"
-            f"3. Run local syntax/type/unit checks and cite exact `file:line` and command output in `evidence[]`.\n\n"
-            f"## Scope & Authority\n"
-            f"- **Mode:** `write` | **May write:** `{scope_str}`\n"
-            f"- **Upstream Contract:** `{contract_file}`\n"
-        )
-        bpath.write_text(btext, encoding="utf-8")
-        brief_files.append(str(bpath))
-
-        pkg = {
-            "name": f"builder-{mname}",
-            "agent": agent,
-            "model": model_slug,
-            "brief": str(bpath),
-            "mode": "write",
-            "may_write": mpaths,
-            "worktree": bool(worktree),
-            "task_type": "implement",
-            "risk": "med",
-            "tier": "standard",
-            "context_file": shared_ctx
-        }
-        if effort:
-            pkg["effort"] = effort
-        batch_pkgs.append(pkg)
-
-        if agent == "agy":
-            native_calls.append({
-                "package": f"builder-{mname}",
-                "mode": "write",
-                "may_write": mpaths,
-                "define_subagent": {
-                    "Name": f"builder-{mname}",
-                    "Description": f"Code Builder for module {mname} (may write: {scope_str})",
-                    "SystemPrompt": f"You are the accountable Builder for module '{mname}'. Write clean production code strictly inside {scope_str} following the Frozen Interface Contract. Run verification checks and cite exact file:line and command output in evidence[].",
-                    "EnableWriteTools": True
-                },
-                "invoke_subagent": {
-                    "TypeName": f"builder-{mname}",
-                    "Role": f"Builder ({mname})",
-                    "Model": "inherit",
-                    "Workspace": "branch" if worktree else "inherit",
-                    "Prompt": btext
-                }
-            })
-        elif agent == "claude":
-            native_calls.append({
-                "package": f"builder-{mname}",
-                "mode": "write",
-                "may_write": mpaths,
-                "Agent": {
-                    "subagent_type": "general-purpose",
-                    "description": f"Builder ({mname})",
-                    "model": model_slug if model_slug in ("haiku", "sonnet", "opus") else "sonnet",
-                    "isolation": "worktree" if worktree else None,
-                    "prompt": btext
-                }
-            })
-        else:
-            native_calls.append({
-                "package": f"builder-{mname}",
-                "mode": "write",
-                "may_write": mpaths,
-                "spawn_agent": {"role": f"Builder ({mname})", "model": model_slug, "prompt": btext}
-            })
-
-    if test_scope:
-        t_idx = len(parsed_mods) + 1
-        tpath = out_path / f"pkg-{t_idx}-tester.md"
-        tpaths = [p.strip() for p in test_scope.split(",") if p.strip()]
-        ttext = (
-            f"# Zero-Prior Adversarial Test Builder Brief\n\n"
-            f"## Role\n"
-            f"- **Role:** Independent QA & Test Builder\n"
-            f"- **Mandate:** Write comprehensive unit, integration, and adversarial edge-case tests in `{test_scope}` directly from `interface-contract.md`, then execute the test suite.\n"
-            f"- **De-Biasing Rule:** Design tests from the specification and failure modes—do NOT write weak tests that merely mirror implementation shortcuts. Do NOT modify production code outside `{test_scope}`.\n\n"
-            f"## Specification Under Test\n"
-            f"{spec_text.strip()}\n\n"
-            f"## Scope & Authority\n"
-            f"- **Mode:** `write` | **May write:** `{test_scope}`\n"
-            f"- **Evidence Required:** Cite test `file:line` and exact test runner output (`pytest` / `unittest`) in `evidence[]`.\n"
-        )
-        tpath.write_text(ttext, encoding="utf-8")
-        brief_files.append(str(tpath))
-        tpkg = {
-            "name": "tester-qa",
-            "agent": agent,
-            "model": model_slug,
-            "brief": str(tpath),
-            "mode": "write",
-            "may_write": tpaths,
-            "worktree": bool(worktree),
-            "task_type": "test",
-            "risk": "med",
-            "tier": "standard",
-            "context_file": shared_ctx
-        }
-        if effort:
-            tpkg["effort"] = effort
-        batch_pkgs.append(tpkg)
-        if agent == "agy":
-            native_calls.append({
-                "package": "tester-qa",
-                "mode": "write",
-                "may_write": tpaths,
-                "define_subagent": {
-                    "Name": "tester-qa",
-                    "Description": f"Zero-Prior Adversarial Test Builder (may write: {test_scope})",
-                    "SystemPrompt": f"You are an independent QA & Test Builder. Write rigorous unit and edge-case tests inside {test_scope} and run the test suite. Never modify production files outside {test_scope}.",
-                    "EnableWriteTools": True
-                },
-                "invoke_subagent": {
-                    "TypeName": "tester-qa",
-                    "Role": "Adversarial Test Builder",
-                    "Model": "inherit",
-                    "Workspace": "branch" if worktree else "inherit",
-                    "Prompt": ttext
-                }
-            })
-
-    r_idx = len(batch_pkgs) + 1
-    rpath = out_path / f"pkg-{r_idx}-reviewer.md"
-    rtext = (
-        f"# Independent Post-Build Code Review Brief\n\n"
-        f"## Role\n"
-        f"- **Role:** Independent Code Reviewer & Integration Auditor\n"
-        f"- **Mandate:** Audit the git diff and test coverage against `interface-contract.md`, checking for logic bugs, interface mismatches, security flaws, and scope violations.\n\n"
-        f"## Scope & Authority\n"
-        f"- **Mode:** `read` (May write: nothing)\n"
-        f"- **Evidence Required:** Every finding MUST cite exact `file:line-line` and verification command output.\n"
-    )
-    rpath.write_text(rtext, encoding="utf-8")
-    brief_files.append(str(rpath))
-
-    hw = probe_hardware()
-    safe_wip = min(len(batch_pkgs), hw["recommended_wip"])
-    batch_file = out_path / "batch_plan.json"
-    batch_file.write_text(json.dumps({"wip": safe_wip, "hardware": hw, "same_model": model_slug, "packages": batch_pkgs}, indent=2), encoding="utf-8")
-
-    native_file = out_path / "native_subagents.json"
-    native_file.write_text(json.dumps({
-        "agent": agent,
-        "same_model": model_slug,
-        "recommended_wip": safe_wip,
-        "hardware": hw["summary"],
-        "interface_contract": str(contract_file),
-        "note": f"Write-enabled Builder + Tester sub-agents with disjoint --may-write scopes (safe parallel wip={safe_wip} per hardware: {hw['summary']}).",
-        "subagents": native_calls
-    }, indent=2), encoding="utf-8")
-
-    return {
-        "dev_dir": str(out_path),
-        "agent": agent,
-        "model": model_slug,
-        "recommended_wip": safe_wip,
-        "hardware": hw,
-        "interface_contract": str(contract_file),
-        "modules": [{"name": k, "may_write": v} for k, v in parsed_mods],
-        "test_scope": test_scope,
-        "worktree": bool(worktree),
-        "brief_files": brief_files,
-        "batch_plan": str(batch_file),
-        "native_subagents": str(native_file)
-    }
-
+def match_installed_skills(keywords, limit=5):
+    """Find installed specialized skills matching any keyword in `keywords`."""
+    if not keywords:
+        return []
+    kws = [str(kw).lower() for kw in keywords if kw and len(str(kw)) >= 3]
+    if not kws:
+        return []
+    scored = []
+    for info in list_installed_skills():
+        name_l = info["name"].lower()
+        hay = f"{name_l} {info['description'].lower()}"
+        score = sum((3 if kw in name_l else 1) for kw in kws if kw in hay)
+        if score > 0:
+            scored.append((score, info))
+    scored.sort(key=lambda x: (-x[0], x[1]["name"]))
+    return [x[1] for x in scored[:limit]]
 
 
 def check_evidence_citations(obj):
     """Verify that conclusion/summary and any assumptions_challenged have concrete evidence backing
-    (e.g. file:line, command output, URL, or [E1] references). Returns a list of grounding warnings."""
+    (e.g. file:line, command output, DOI/arXiv/PMID/URL, or [E1] references). Returns grounding warnings."""
     if not isinstance(obj, dict):
         return []
     warnings = []
@@ -923,9 +560,12 @@ def check_evidence_citations(obj):
     status = obj.get("status")
     if status == "done" and not ev:
         warnings.append("status is 'done' but `evidence` is empty (every conclusion requires verifiable proof)")
-    anchor_re = re.compile(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+:\d+|https?://|`[^`]+`|\b\d+(\.\d+)?%|\bexit\s+\d+|\bline\s+\d+|\[E\d+\])", re.I)
+    anchor_re = re.compile(
+        r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+:\d+|https?://|`[^`]+`|\b\d+(\.\d+)?%|\bexit\s+\d+|\bline\s+\d+|\[E\d+\]|\b(?:doi|arxiv|pmid|pmcid)\s*[:/]\s*\S+)",
+        re.I
+    )
     if ev and not any(anchor_re.search(str(x)) for x in ev):
-        warnings.append("`evidence` items lack concrete anchors (expected `file:line`, `command -> output`, measured numbers, or URL)")
+        warnings.append("`evidence` items lack concrete anchors (expected `file:line`, `command -> output`, DOI/arXiv/PMID/URL, or measured numbers)")
     for ch in obj.get("assumptions_challenged") or []:
         if not anchor_re.search(str(ch)) and not ev:
             warnings.append(f"`assumptions_challenged` claim lacks concrete proof or spike citation: {str(ch)[:80]}")

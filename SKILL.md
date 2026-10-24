@@ -3,9 +3,9 @@ name: agent-orchestration
 description: Manage subagents like a professional manager and coordinate intelligent multi-agent collaboration with low token cost. It covers whether to delegate at all, choosing a team shape, picking the right brief mode (tight, guided, or exploratory so structure never limits agent intelligence), routing to the right model family and vendor (Claude subagents, Codex CLI, Antigravity/agy, `claude -p`), sharing context directly via a Shared Blackboard (`--context-file`) and native peer messaging, running constructive & empirical huddles, and accepting results on evidence. Use it whenever a task could be split across agents or models, whenever you consider spawning subagents, running work in parallel, handing a task to Codex, Antigravity or Claude, getting a second opinion or independent review, or coordinating a multi-step job.
 ---
 
-# Agent Orchestration (v3: Adaptive & Stigmergic Collaboration)
+# Agent Orchestration
 
-> **Fast Start:** Read [`CATALOG.md`](CATALOG.md) in the skill root first for the 1-page cheat sheet of all 10 core rules, CLI invocation commands for **Codex CLI**, **Claude Code CLI**, and **Antigravity (`agy`)**, the Anti-Hallucination Evidence Law, and the reference index.
+> **Fast Start:** Read [`CATALOG.md`](CATALOG.md) in the skill root first for the 1-page cheat sheet of all core rules, CLI invocation commands for **Codex CLI**, **Claude Code CLI**, and **Antigravity (`agy`)**, specialized skill attachment (`--skill`), the Anti-Hallucination Evidence Law, and the reference index.
 
 You are the manager and integration owner. Workers own the deliverables and investigations you assign them. You set clear goals and safety boundaries up front, empower workers to think independently and challenge flawed premises, connect them directly to upstream artifacts so nuance is never lost, and judge results once on verifiable evidence.
 
@@ -22,10 +22,9 @@ Four principles drive every rule below:
 4. **Anti-Hallucination Evidence Law (No Proof = No Claim).**
    - Every critique finding, premise challenge (`assumptions_challenged`), and final conclusion (`summary`) **MUST** carry a verifiable ground-truth anchor in `evidence[]`: exact `file:line-line` + excerpt, `command -> exit code / output`, or measured numbers.
    - Unbacked claims or vague skepticism ("this might be slow", "this seems risky") are never accepted as verdicts or blockers—`agent_run.py` automatically audits result envelopes and flags unanchored claims in `meta.json` (`evidence_warnings`).
-5. **De-Biased Single-Host Sub-Agents & Multi-Horizon Exploration (`references/multi-perspective-and-single-host.md`).**
-   - In a single session, your own prior tokens create **autoregressive confirmation bias** (making you overconfident in your initial hunch). Even when only **one agent** is installed on the machine (e.g., only Antigravity `agy`, without `claude` or `codex`), break out of context bias by spawning **clean-context sub-agents** (`invoke_subagent` + `define_subagent`, `Agent()`, or `--single-host`) with:
-     - **Zero-Prior (Blinded) Briefs:** Pass only verified facts, symptoms, and `file:line` pointers—never leak your unverified hypothesis into the sub-agent's prompt.
-     - **Orthogonal Expert Council:** Assign opposing domain lenses (`First-Principles Architect`, `Adversarial Red-Team Falsifier`, `Pragmatic Simplicity Minimalist`, `Runtime & Failure Engineer`) so sub-agents explore multiple directions (`Diverge → Falsify → Probe → Synthesize → Plan`) before you commit to an implementation plan.
+5. **De-Biased Parallel Sub-Agents & Specialized Skill Delegation (`references/multi-perspective-and-single-host.md`).**
+   - In a single session, your own prior tokens create **autoregressive confirmation bias** (making you overconfident in your initial hunch). Even when only **one agent** or **one model** is used (`--single-host` / `--same-model`), break out of context bias by spawning **clean-context parallel sub-agents** (`invoke_subagent`, `Agent()`, or `agent_run.py batch`) with **Zero-Prior (Blinded) Briefs** (passing only verified facts, symptoms, and `file:line` pointers—never leaking your unverified hypothesis).
+   - **Delegate domain depth to specialized skills (`--skill`):** Do not hardcode domain-specific workflows inside orchestration. Discover installed specialized skills via `route.py --list-skills` (or `route.py --need <keyword>`) and attach their `SKILL.md` to sub-agents via `--skill <name>`.
 
 ## The Adaptive Loop
 
@@ -39,7 +38,7 @@ Four principles drive every rule below:
 6. **Issue work orders & connect the Shared Blackboard** (`references/brief-and-budget.md`):
    - Pick the brief mode (`tight` 4-line brief for lookups/small edits; `guided` for standard builds/reviews; `exploratory` for debugging, research, and design).
    - **Avoid lossy manager relays:** when Worker B builds on or reviews Worker A's work, pass Worker A's artifact/diff directly via `--context-file <path>` (or native `send_message`) instead of re-summarizing it yourself.
-7. **Run and wait (Hardware-Aware Parallelism).** Launch independent packages in parallel (`agent_run.py parallel` / `batch` or native sub-agents), automatically scaling concurrency (`wip`) to the machine's live CPU cores, free RAM, GPU VRAM, and disk headroom (`ao_common.probe_hardware()`). Use `--name <slug>` for descriptive run folders while keeping `--task-type` canonical (`review`, `implement`, `explore`, `debug`...). Never poll or fabricate results.
+7. **Run and wait (Hardware-Aware Parallelism + Specialized Skills).** Launch independent packages in parallel (`agent_run.py batch` or native sub-agents), automatically scaling concurrency (`wip`) to the machine's live CPU cores, free RAM, GPU VRAM, and disk headroom (`ao_common.probe_hardware()`). Attach domain-specific skills via `--skill <skill_name>` when a worker needs specialized tools or workflows. Use `--name <slug>` for descriptive run folders while keeping `--task-type` canonical (`review`, `implement`, `explore`, `debug`...). Never poll or fabricate results.
 8. **Accept once, on evidence & epistemic signals** (`references/verification.md`):
    - Check `assumptions_challenged`, `open_questions`, and `handoff_notes` alongside `status` and `evidence`. If a worker disproved a flawed assumption in your brief with solid evidence, **reward that discovery** and pivot the plan.
    - Run cheap deterministic checks (tests, lint, grep, bounded git diff) before LLM judgment.

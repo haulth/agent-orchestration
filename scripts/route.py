@@ -5,8 +5,9 @@ using the verdict ledger.
 
   route.py --task-type T [--risk low|med|high] [--ambiguity low|high] [--size s|m|l]
            [--manager claude|codex|agy] [--builder VENDOR] [--need KEYWORD ...]
-           [--type1] [--sensitive] [--json]
+           [--single-host] [--same-model] [--type1] [--sensitive] [--json]
   route.py --list-models                 # show all live available models and auto-selected tiers right now
+  route.py --list-skills                 # list installed specialized skills that can be attached via --skill
 """
 import argparse
 import json
@@ -102,6 +103,18 @@ def cmd_list_models(as_json=False):
     return 0
 
 
+def cmd_list_skills(as_json=False):
+    skills = ao.list_installed_skills()
+    if as_json:
+        print(json.dumps(skills, indent=2))
+        return 0
+    print(f"## Installed Specialized Skills ({len(skills)} found)")
+    for s in skills:
+        desc = (s["description"] or "")[:95]
+        print(f"  - {s['name']:36s} -> {s['path']}  ({desc})")
+    return 0
+
+
 def route(a):
     models = ao.load_models()
     order = models["tier_order"]
@@ -140,10 +153,11 @@ def route(a):
         avail = [c for c in cands if c[2] or (ao.resolve_exe(c[0]) and agents.get(c[0], {}).get("authenticated") is not False)]
     if a.need:
         matched = [c for c in avail if all(k.lower() in caps_text(caps, c[0]) for k in a.need)]
-        if not matched:
-            return {"error": f"no known vendor advertises {a.need}. Run: discover.py --deep <agent> "
-                             "(costs tokens; ask the user first), then retry."}
-        avail = matched
+        if matched:
+            avail = matched
+        else:
+            pref_avail = [c for c in avail if c[3]]
+            avail = pref_avail or avail
     else:
         pref_avail = [c for c in avail if c[3]]
         avail = pref_avail or avail
@@ -246,19 +260,28 @@ def route(a):
             ladder.append(f"{c[0]} {cn} ({cc['model']})")
             break
 
-    council = ao.expert_council_for_task(task_name)
     hw = ao.probe_hardware()
     rec_wip = hw["recommended_wip"]
-    same_model_panel = [f"{v}/{tcfg['model']} [{lobj['lens']}" + (" (WRITE)" if lobj.get("writes") else "") + "]"
-                        for lobj in council["lenses"][:min(4, rec_wip)]]
-    scope_args = " --scope core:src/core/ --scope api:src/api/" + (" --worktree" if writes and hw["worktree_safe"] else "") if writes else ""
-    parallel_cmd = (f"python {Path(__file__).resolve().parent / 'agent_run.py'} parallel "
-                    f"--brief BRIEF.md --task-type {task_name}{scope_args} --agent {v} --model {tcfg['model']} --wip {rec_wip} [--execute]")
+    search_terms = list(a.need or []) + [a.task_type, task_name]
+    matched_skills = ao.match_installed_skills(search_terms, limit=5)
+    skill_flags = "".join(f" --skill {s['name']}" for s in matched_skills[:2])
+    batch_cmd = f"python {Path(__file__).resolve().parent / 'agent_run.py'} batch plan.json --wip {rec_wip}"
     fanout_guide = {
-        "agy": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call `define_subagent(EnableWriteTools={bool(writes)})` + up to {rec_wip} parallel `invoke_subagent(Model='inherit', Workspace='{'branch' if writes and hw['worktree_safe'] else 'inherit'}')` with Zero-Prior Briefs" + (" & disjoint `--may-write` scopes" if writes else "") + f", OR run `{parallel_cmd}`.",
-        "claude": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call up to {rec_wip} parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}'" + (", isolation='worktree'" if writes and hw["worktree_safe"] else "") + f")`, OR run `{parallel_cmd}`.",
-        "codex": f"Parallel sub-agents (hardware-capped wip={rec_wip}): call up to {rec_wip} parallel `spawn_agent` on `{tcfg['model']}`, OR run `{parallel_cmd}`."
+        "agy": (f"Parallel sub-agents (hardware-capped wip={rec_wip}): spawn up to {rec_wip} parallel "
+                f"`invoke_subagent(Model='inherit', Workspace='{'branch' if writes and hw['worktree_safe'] else 'inherit'}')` "
+                f"with clean KV-cache (Zero-Prior Briefs)"
+                + (" & disjoint `--may-write` scopes" if writes else "")
+                + (f" + specialized skills ({', '.join(s['name'] for s in matched_skills[:3])})" if matched_skills else "")
+                + f", OR run `{batch_cmd}`."),
+        "claude": (f"Parallel sub-agents (hardware-capped wip={rec_wip}): spawn up to {rec_wip} parallel "
+                   f"`Agent(subagent_type='general-purpose', model='{tcfg['model']}'"
+                   + (", isolation='worktree'" if writes and hw["worktree_safe"] else "")
+                   + f")`, OR run `{batch_cmd}`."),
+        "codex": (f"Parallel sub-agents (hardware-capped wip={rec_wip}): spawn up to {rec_wip} parallel "
+                  f"`spawn_agent` on `{tcfg['model']}`, OR run `{batch_cmd}`.")
     }.get(v, "")
+    if skill_flags and cmd and "agent_run.py run" in cmd:
+        cmd += skill_flags
 
     out.update(vendor=v, native=native, tier=tname, model=tcfg["model"], effort=tcfg.get("effort"),
                family=tcfg.get("family") or ao.model_family(v, tcfg["model"], models),
@@ -270,27 +293,20 @@ def route(a):
                writes=bool(writes),
                hardware=hw,
                recommended_wip=rec_wip,
-               expert_lenses=council["lenses"],
-               debias_rules=council["debias_rules"],
-               planning_workflow=council["planning_workflow"],
-               same_model_panel=same_model_panel,
-               parallel_command=parallel_cmd,
-               single_host_fanout=fanout_guide)
+               matched_skills=matched_skills,
+               batch_command=batch_cmd,
+               parallel_fanout=fanout_guide)
     if task.get("panel") or single_host_req:
         if not single_host_active and len(unique_hosts) > 1:
             out["panel"] = [f"{k} {tier_for(models, caps, k, idx)[2]['model']}"
                             for k in unique_hosts]
         elif same_model_req:
-            out["panel"] = same_model_panel[:3]
+            out["panel"] = [f"{v}/{tcfg['model']} (worker #{i + 1}, clean KV-cache)" for i in range(min(3, rec_wip))]
         else:
-            # Single-host panel: combine intra-host model families (if multiple exist) with Orthogonal Expert Lenses
             fam_models = ao.intra_host_family_models(v, tier_name=tname, models=models, caps=caps)
-            lenses = council["lenses"][:3]
-            panel_items = []
-            for i_l, lobj in enumerate(lenses):
-                m_pick = fam_models[i_l % len(fam_models)][1] if fam_models else tcfg["model"]
-                panel_items.append(f"{v}/{m_pick} [{lobj['lens']}]")
-            out["panel"] = panel_items
+            out["panel"] = [f"{v}/{fam_models[i % len(fam_models)][1]} ({fam_models[i % len(fam_models)][0]})"
+                            if fam_models else f"{v}/{tcfg['model']}"
+                            for i in range(min(3, max(1, len(fam_models))))]
     return out
 
 
@@ -310,17 +326,15 @@ def render(o):
               f"verify: {o['verify']}   {ov}"]
     if o.get("hardware"):
         lines.append("hardware: " + o["hardware"]["summary"])
+    if o.get("matched_skills"):
+        s_str = ", ".join(f"{s['name']} ({s['path']})" for s in o["matched_skills"])
+        lines.append(f"specialized skills matched (delegate domain depth via --skill): {s_str}")
     if o.get("panel"):
-        label = ("same-model sub-agent panel" if o.get("same_model") else
-                 ("single-host multi-lens panel" if o.get("single_host") else "panel (one per vendor)"))
+        label = ("same-model parallel panel" if o.get("same_model") else
+                 ("single-host intra-family panel" if o.get("single_host") else "panel (one per vendor)"))
         lines.append(f"{label}: " + " | ".join(o["panel"]))
-    if o.get("same_model_panel") and o.get("single_host") and not o.get("same_model"):
-        lines.append("same-model panel (1 model, clean KV-cache per lens): " + " | ".join(o["same_model_panel"]))
-    if o.get("expert_lenses") and (o.get("single_host") or o.get("writes") or o["task"] in ("explore", "design", "debug", "critique", "review", "security-review")):
-        lens_str = " | ".join(f"{x['lens']}{'[WRITE]' if x.get('writes') else '[READ]'} ({x['mandate'][:44]}...)" for x in o["expert_lenses"][:4])
-        lines.append(f"parallel roles (clean-context sub-agents): {lens_str}")
-        if o.get("single_host_fanout"):
-            lines.append(f"parallel fan-out ({o['vendor']}): {o['single_host_fanout']}")
+    if o.get("parallel_fanout"):
+        lines.append(f"parallel fan-out ({o['vendor']}): {o['parallel_fanout']}")
     lines.append("run: " + o["command"])
     return "\n".join(lines)
 
@@ -328,23 +342,26 @@ def render(o):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--list-models", action="store_true", help="inspect all live available models and tier picks across all agents")
-    p.add_argument("--task-type", help="canonical or descriptive task type (required unless --list-models)")
+    p.add_argument("--list-skills", action="store_true", help="list installed specialized skills that can be attached to workers via --skill")
+    p.add_argument("--task-type", help="canonical or descriptive task type (required unless --list-models or --list-skills)")
     p.add_argument("--risk", choices=["low", "med", "high"], default="med")
     p.add_argument("--ambiguity", choices=["low", "high"], default="low")
     p.add_argument("--size", choices=["s", "m", "l"], default="m")
     p.add_argument("--manager", choices=["claude", "codex", "agy"], default="claude")
     p.add_argument("--builder", choices=["claude", "codex", "agy"])
-    p.add_argument("--single-host", action="store_true", help="route using only --manager (via clean-context sub-agents, intra-host model families, and orthogonal expert lenses)")
-    p.add_argument("--same-model", action="store_true", help="keep ALL sub-agents / reviewers on the exact SAME single model, achieving independence via clean KV-cache + Zero-Prior Briefs + Orthogonal Expert Lenses")
-    p.add_argument("--need", action="append", default=[])
+    p.add_argument("--single-host", action="store_true", help="route using only --manager (via clean-context sub-agents and intra-host model families)")
+    p.add_argument("--same-model", action="store_true", help="keep ALL sub-agents / reviewers on the exact SAME single model with clean KV-cache (Zero-Prior Briefs)")
+    p.add_argument("--need", action="append", default=[], help="keywords for agent capabilities or specialized skills (e.g. --need arxiv --need pymol)")
     p.add_argument("--type1", action="store_true", help="hard-to-reverse decision: forces verify L3")
     p.add_argument("--sensitive", action="store_true", help="security, data or deploy work: forces verify L3")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
     if a.list_models:
         sys.exit(cmd_list_models(a.json))
+    if a.list_skills:
+        sys.exit(cmd_list_skills(a.json))
     if not a.task_type:
-        p.error("--task-type is required (or pass --list-models)")
+        p.error("--task-type is required (or pass --list-models / --list-skills)")
     o = route(a)
     print(json.dumps(o, indent=2) if a.json else render(o))
     sys.exit(3 if "error" in o else 0)

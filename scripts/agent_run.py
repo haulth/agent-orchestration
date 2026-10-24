@@ -4,10 +4,10 @@
   agent_run.py run --agent codex|agy|claude --brief F [--name SLUG] [--out DIR]
                    [--model M] [--effort E] [--mode read|write] [--cd DIR]
                    [--may-write PATH ...] [--add-dir DIR] [--context-file PATH ...]
-                   [--worktree] [--search] [--bare] [--max-budget-usd USD]
-                   [--timeout S] [--schema PATH|none] [--resume ID]
+                   [--skill SKILL_NAME_OR_PATH ...] [--worktree] [--search] [--bare]
+                   [--max-budget-usd USD] [--timeout S] [--schema PATH|none] [--resume ID]
                    [--task-type T] [--risk low|med|high] [--tier T] [--no-ledger]
-  agent_run.py batch plan.json [--wip 3]
+  agent_run.py batch plan.json [--wip N]
   agent_run.py verdict RUN_DIR accept|revise|escalate|rollback|takeover [--note "..."]
   agent_run.py stats [--project P] [--task-type T]
 
@@ -386,28 +386,45 @@ ADAPTERS = {"codex": (build_codex, parse_codex), "agy": (build_agy, parse_agy),
 
 
 # ---------- core ----------
-def _inject_context_files(brief_bytes, context_files, project):
-    """Append a Shared Blackboard / Context Files section to the brief copy when --context-file is passed."""
-    if not context_files:
+def _inject_context_and_skills(brief_bytes, context_files, skills, project):
+    """Append Shared Blackboard files (--context-file) and Specialized Skills (--skill) to the brief copy."""
+    lines = []
+    if skills:
+        lines.append("\n\n## Attached Specialized Skills (Read each SKILL.md and follow its domain workflow)")
+        for sp in skills:
+            lines.append(f"- `{sp}`")
+    if context_files:
+        lines.append("\n\n## Shared Blackboard / Upstream Artifacts (read directly as needed)")
+        for cf in context_files:
+            p = Path(cf)
+            if not p.is_absolute():
+                p = (project / p).resolve()
+            else:
+                p = p.resolve()
+            lines.append(f"- `{p}`")
+    if not lines:
         return brief_bytes
-    lines = ["\n\n## Shared Blackboard / Upstream Artifacts (read directly as needed)"]
-    for cf in context_files:
-        p = Path(cf)
-        if not p.is_absolute():
-            p = (project / p).resolve()
-        else:
-            p = p.resolve()
-        lines.append(f"- `{p}`")
     lines.append("")
     return brief_bytes + ("\n".join(lines)).encode("utf-8")
 
 
 def run_one(a):
     """Run one work order; return (meta, result_text, log_path). Raises Usage on caller errors."""
-    for attr, default in (("name", None), ("context_file", []), ("worktree", False),
+    for attr, default in (("name", None), ("context_file", []), ("skill", []), ("worktree", False),
                           ("search", False), ("bare", False), ("max_budget_usd", None)):
         if not hasattr(a, attr):
             setattr(a, attr, default)
+    resolved_skills = []
+    skill_dirs = set()
+    for s in (a.skill or []):
+        sp = ao.resolve_skill_path(s)
+        if not sp:
+            raise Usage(f"specialized skill '{s}' not found; run 'route.py --list-skills' to see installed skills")
+        resolved_skills.append(sp)
+        skill_dir = str(Path(sp).parent.resolve())
+        skill_dirs.add(skill_dir)
+        if skill_dir not in a.add_dir:
+            a.add_dir.append(skill_dir)
     if a.resume:
         man = ao.load_session(a.agent, a.resume)
         changed_req = (a.add_dir or (a.mode and man and a.mode != man["mode"]) or (a.mode == "write" and not man)
@@ -437,6 +454,8 @@ def run_one(a):
                     "or pass --allow-unchecked-write to accept an unchecked scope")
     if not a.allow_outside:
         for d in a.add_dir:
+            if str(Path(d).resolve()) in skill_dirs:
+                continue
             if not inside(d, project):
                 raise Usage(f"--add-dir {d} is outside the project {project}; needs --allow-outside "
                             "and the user's approval")
@@ -462,7 +481,7 @@ def run_one(a):
         ensure_excluded(project)
     attempt = next_attempt_dir(out)
     brief_path = attempt / "brief.md"
-    brief_bytes = _inject_context_files(Path(a.brief).read_bytes(), a.context_file, project)
+    brief_bytes = _inject_context_and_skills(Path(a.brief).read_bytes(), a.context_file, resolved_skills, project)
     brief_path.write_bytes(brief_bytes)
 
     use_schema = str(a.schema).lower() != "none"
@@ -576,13 +595,15 @@ def cmd_batch(a):
     wip = a.wip or min(plan_wip, hw["recommended_wip"])
     print(f"[hardware] {hw['summary']} -> active parallel wip={wip}")
     base = dict(agent=None, brief=None, name=None, out=None, model=None, effort=None, mode=None, cd=None,
-                may_write=[], add_dir=[], context_file=[], worktree=False, search=False, bare=False,
+                may_write=[], add_dir=[], context_file=[], skill=[], worktree=False, search=False, bare=False,
                 max_budget_usd=None, timeout=900, schema=str(DEFAULT_SCHEMA), resume=None,
                 task_type=None, risk=None, tier=None, no_ledger=False, allow_outside=False,
                 allow_spawn=False, allow_tool=[], allow_unknown_resume=False, allow_unchecked_write=False)
     specs = []
     for i, p in enumerate(pkgs):
         d = {**base, **{k: v for k, v in p.items() if k in base}}
+        if p.get("skills") and not d.get("skill"):
+            d["skill"] = p["skills"]
         d["_name"] = p.get("name") or f"pkg{i + 1}"
         if not d.get("name"):
             d["name"] = d["_name"]
@@ -689,57 +710,6 @@ def cmd_stats(a):
     return 0
 
 
-def cmd_council(a):
-    bp = Path(a.brief)
-    problem_text = bp.read_text(encoding="utf-8") if bp.exists() else a.brief
-    info = ao.build_same_model_council(
-        task_name=a.task_type or "explore",
-        problem_text=problem_text,
-        agent=a.agent,
-        model_slug=a.model,
-        effort=a.effort,
-        out_dir=a.out,
-        context_files=a.context_file
-    )
-    print(json.dumps(info, indent=2))
-    if a.execute:
-        bns = argparse.Namespace(plan=info["batch_plan"], wip=a.wip, allow_spawn=a.allow_spawn)
-        return cmd_batch(bns)
-    return 0
-
-
-def cmd_dev(a):
-    bp = Path(a.brief)
-    spec_text = bp.read_text(encoding="utf-8") if bp.exists() else a.brief
-    info = ao.build_dev_plan(
-        spec_text=spec_text,
-        modules=a.module or ["core:src/"],
-        test_scope="" if a.no_test else a.test_scope,
-        agent=a.agent,
-        model_slug=a.model,
-        effort=a.effort,
-        worktree=a.worktree,
-        out_dir=a.out,
-        context_files=a.context_file
-    )
-    print(json.dumps(info, indent=2))
-    if a.execute:
-        bns = argparse.Namespace(plan=info["batch_plan"], wip=a.wip, allow_spawn=a.allow_spawn)
-        return cmd_batch(bns)
-    return 0
-
-
-def cmd_parallel(a):
-    """Unified parallel work decomposition: splits any task (research, design, critique, coding, testing)
-    into clean-context parallel sub-agents (read-only lenses OR disjoint write scopes)."""
-    models = ao.load_models()
-    canon_t = ao.canonical_task(a.task_type, models) or "explore"
-    writes = bool(a.module or (models.get("tasks", {}).get(canon_t) or {}).get("writes"))
-    if writes:
-        return cmd_dev(a)
-    return cmd_council(a)
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -756,6 +726,8 @@ def main():
     r.add_argument("--add-dir", action="append", default=[])
     r.add_argument("--context-file", action="append", default=[],
                    help="shared blackboard / upstream artifact paths appended to the brief for direct reading")
+    r.add_argument("--skill", action="append", default=[],
+                   help="installed specialized skill name or SKILL.md path to attach to the worker's brief")
     r.add_argument("--worktree", action="store_true",
                    help="run in an isolated git worktree (supported by codex and claude)")
     r.add_argument("--search", action="store_true",
@@ -792,52 +764,11 @@ def main():
     s = sub.add_parser("stats")
     s.add_argument("--project")
     s.add_argument("--task-type")
-    c = sub.add_parser("council", help="generate (and optionally run) a Same-Model De-Biased Expert Council with Zero-Prior Briefs & Orthogonal Lenses")
-    c.add_argument("--brief", required=True, help="path to problem/facts file or inline problem statement")
-    c.add_argument("--agent", default="agy", choices=list(ADAPTERS))
-    c.add_argument("--model", help="single model to use across ALL expert sub-agents (defaults to live frontier model or 'inherit')")
-    c.add_argument("--effort")
-    c.add_argument("--task-type", default="design")
-    c.add_argument("--out", help="output directory for generated council briefs & specs")
-    c.add_argument("--context-file", action="append", default=[])
-    c.add_argument("--execute", action="store_true", help="immediately run all Same-Model Expert Lenses in parallel via batch")
-    c.add_argument("--wip", type=int)
-    c.add_argument("--allow-spawn", action="store_true")
-    d = sub.add_parser("dev", help="generate (and optionally run) a Multi-Module Code Implementation & System Development Plan (Frozen Interface + Disjoint Write Builders + Zero-Prior Test Builder + Reviewer)")
-    d.add_argument("--brief", required=True, help="path to specification file or inline feature/system spec")
-    d.add_argument("--module", action="append", default=[], help="module name and write scope as 'name:path1/,path2/' (repeatable, e.g. --module core:src/core/ --module api:src/api/)")
-    d.add_argument("--test-scope", default="tests/", help="write scope for the independent Zero-Prior Test Builder (default: tests/)")
-    d.add_argument("--no-test", action="store_true", help="skip generating a separate Test Builder package")
-    d.add_argument("--agent", default="codex", choices=list(ADAPTERS))
-    d.add_argument("--model", help="model to use across Builders & Tester (defaults to live tier model or 'inherit')")
-    d.add_argument("--effort")
-    d.add_argument("--worktree", action="store_true", help="isolate each Builder in its own git worktree / branch")
-    d.add_argument("--out", help="output directory for generated dev briefs & specs")
-    d.add_argument("--context-file", action="append", default=[])
-    d.add_argument("--execute", action="store_true", help="immediately execute the generated Builder + Tester batch plan")
-    d.add_argument("--wip", type=int)
-    d.add_argument("--allow-spawn", action="store_true")
-    pl = sub.add_parser("parallel", help="unified parallel task decomposition (splits any job—research, critique, coding, testing—into clean-context parallel sub-agents)")
-    pl.add_argument("--brief", required=True, help="path to brief/spec file or inline task description")
-    pl.add_argument("--task-type", default="explore", help="task type (explore, design, debug, review, critique, implement, system-dev, refactor, test)")
-    pl.add_argument("--module", "--scope", dest="module", action="append", default=[], help="optional write scopes as 'name:path/' for parallel file changes")
-    pl.add_argument("--test-scope", default="tests/")
-    pl.add_argument("--no-test", action="store_true")
-    pl.add_argument("--agent", default="agy", choices=list(ADAPTERS))
-    pl.add_argument("--model", help="model for parallel sub-agents (can use the exact same model across all workers)")
-    pl.add_argument("--effort")
-    pl.add_argument("--worktree", action="store_true")
-    pl.add_argument("--out")
-    pl.add_argument("--context-file", action="append", default=[])
-    pl.add_argument("--execute", action="store_true", help="run all generated packages in parallel immediately")
-    pl.add_argument("--wip", type=int)
-    pl.add_argument("--allow-spawn", action="store_true")
     a = p.parse_args()
     if a.cmd == "run":
         a.may_write = [x for grp in a.may_write for x in grp]
     try:
-        sys.exit({"run": cmd_run, "batch": cmd_batch, "verdict": cmd_verdict, "stats": cmd_stats,
-                  "parallel": cmd_parallel, "council": cmd_council, "dev": cmd_dev}[a.cmd](a))
+        sys.exit({"run": cmd_run, "batch": cmd_batch, "verdict": cmd_verdict, "stats": cmd_stats}[a.cmd](a))
     except Usage as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

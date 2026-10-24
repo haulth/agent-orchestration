@@ -7,7 +7,7 @@
 ## 1. Ten Golden Rules (How Agents Collaborate)
 
 1. **Delegate only when it pays:** Multi-agent runs cost ~5x–15x chat tokens; external CLI calls add ~12.5k (`codex`) to ~19.5k (`agy`) fixed overhead. Do tiny tasks (`<3` tool calls) yourself or via native subagents.
-2. **Hardware-Aware Unified Parallel Decomposition (`parallel` / `batch`):** Any complex task (research, design, debugging, code implementation, testing) is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`). **Always respect machine hardware (`ao_common.probe_hardware()`):** parallel `wip` is automatically throttled by available CPU cores, free RAM (`~1.5 GB` per worker + `2.0 GB` OS reserve), GPU VRAM, and free disk space so parallel runs never OOM or thrash swap.
+2. **Hardware-Aware Parallel Orchestration & Specialized Skill Delegation (`batch` + `--skill`):** Any complex task is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), attached domain-specific skills (`--skill <skill_name>`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`). **Do not reinvent domain workflows inside orchestration:** attach installed specialized skills (`route.py --list-skills`) so workers follow domain-grade tools and instructions. **Always respect machine hardware (`ao_common.probe_hardware()`):** parallel `wip` is automatically throttled by available CPU cores, free RAM (`~1.5 GB` per worker + `2.0 GB` OS reserve), GPU VRAM, and free disk space.
 3. **Three Brief Modes (match ceremony to uncertainty):**
    - `tight` (4 lines: Intent/Done, Context, Scope, Output) → lookups, mechanical edits, small tests.
    - `guided` (Role lens, Intent, DoD, Context, Latitude, Finish line, Scope) → features, code review, docs.
@@ -22,9 +22,9 @@
 8. **Dynamic Model Discovery (never rely on stale hardcoded lists):** `discover.py` probes live models across all 3 harnesses (`agy models`, `~/.codex/.codex-global-state.json`, `~/.claude/cache/model-catalog/*` & `gateway-models.json`), and `route.py` scores and selects the best live model per tier automatically (`source: dynamic_discovered`).
 9. **Epistemic Independence = Different Model Family (or Single-Host Clean-Context + Alt Family/Lens):** An independent reviewer (`review`, `security-review`, `critique`) must come from a different model family (`openai` vs `google` vs `anthropic`) than the builder (`route.py --builder <vendor>` enforces this). If only 1 agent exists on the machine (`--single-host`), `route.py` automatically switches to an intra-host alternate model family (e.g., `agy` switching from `gemini-4-argon-high` to `claude-opus-5-5-high`) + **Zero-Prior Clean-Context Sub-Agent**.
 10. **Empirical Huddle (Spike before Debate, Synthesis Option C):** When panelists disagree on a testable fact, run a 2-minute micro-spike/command to measure the truth instead of running another prose debate round. On design trade-offs, ask panelists to synthesize a better **Option C**.
-11. **Unified Parallel Sub-Agents & De-Biasing (works across vendors OR on 1 agent / 1 model):**
+11. **Clean-Context Parallel Sub-Agents & Specialized Skills (works across vendors OR on 1 agent / 1 model):**
     - **Zero-Prior (Blinded) Briefs:** Never leak your unverified hunch into a sub-agent's prompt; pass only symptoms, constraints, and `file:line` facts so your current conversation tokens cannot bias the sub-agent into overconfident confirmation.
-    - **Parallel Decomposition (`agent_run.py parallel` / `batch`):** Whether analyzing from orthogonal lenses or writing code across modules, split the work into independent packages with disjoint `--may-write` scopes (and shared `--context-file` contracts) and run them **in parallel**.
+    - **Delegate Domain Depth to Specialized Skills (`--skill`):** Use `route.py --list-skills` (or `route.py --need <keyword>`) to discover installed specialized skills (`literature-search-arxiv`, `pubmed-database`, `pymol`, etc.) and attach them via `--skill <name>` in `agent_run.py run` or `batch` (`"skill": ["..."]`).
 
 ---
 
@@ -32,28 +32,27 @@
 
 Replace `<skill>` with the skill folder path (e.g. `~/.agents/skills/agent-orchestration`).
 
-### A. Zero-Token Live Model Inspection & Routing
+### A. Zero-Token Live Model & Skill Inspection + Routing
 ```bash
-# 1. Inspect ALL live available models right now across codex, claude, and agy (never out-of-date)
+# 1. Inspect ALL live available models and installed specialized skills right now (0 tokens)
 python <skill>/scripts/route.py --list-models
+python <skill>/scripts/route.py --list-skills
 
 # 2. Refresh full capability snapshot (flags, MCPs, plugins, skills, live models)
 python <skill>/scripts/discover.py --quick          # fast version check (exit 10 -> run full)
 python <skill>/scripts/discover.py                  # full live model & capability snapshot
 
-# 3. Compute optimal vendor, live-scored model, brief_mode & verify level (0 tokens)
+# 3. Compute optimal vendor, live-scored model, matched specialized skills & hardware-safe wip (0 tokens)
 python <skill>/scripts/route.py --task-type review --risk med --builder codex --manager claude
-python <skill>/scripts/route.py --task-type explore --ambiguity high
+python <skill>/scripts/route.py --task-type research --need arxiv --manager agy --same-model
 
 # 4. Single-Host & Same-Model Mode (when only 1 agent or only 1 model is used across all sub-agents)
 python <skill>/scripts/route.py --task-type design --manager agy --same-model
 python <skill>/scripts/route.py --task-type review --builder agy --manager agy --same-model
 python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
-# 5. Unified Parallel Task Decomposition (works for analysis, critique, multi-module coding & testing; supports 1 model)
-python <skill>/scripts/agent_run.py parallel --brief BRIEF.md --agent agy --task-type design [--execute]
-python <skill>/scripts/agent_run.py parallel --brief SPEC.md --task-type implement \
-       --scope core:src/core/ --scope api:src/api/ --agent codex [--worktree] [--execute]
+# 5. Hardware-Capped Parallel Batch Execution (runs independent read/write packages in parallel)
+python <skill>/scripts/agent_run.py batch plan.json
 ```
 
 ### B. Unified Cross-Agent Runner (`agent_run.py`)

@@ -42,14 +42,16 @@ You **DO NOT** need multiple model families to get genuine epistemic independenc
 1. **Clean KV-Cache per Sub-Agent:** Each sub-agent starts in a fresh session with 0 tokens of the Lead Agent's prior reasoning.
 2. **Zero-Prior Brief + Orthogonal Expert Lenses:** Because $P(y \mid \text{SystemPrompt}_{\text{Lens}}, \text{ZeroPriorBrief})$ shifts across opposing objective functions (`First-Principles Architect` vs. `Adversarial Red-Team Falsifier` vs. `Pragmatic Simplicity Minimalist` vs. `Runtime Engineer`), the same model searches different parts of the codebase and actively falsifies weak assumptions.
 
-### Fast Commands for Same-Model & Single-Host Orchestration
+### Fast Commands for Same-Model, Single-Host & Specialized Skill Orchestration
 ```bash
-# 1. Route keeping ALL sub-agents / reviewers on the EXACT SAME model (--same-model)
-python <skill>/scripts/route.py --task-type design --manager agy --same-model
+# 1. Inspect installed specialized skills and route keeping ALL sub-agents on the SAME model (--same-model)
+python <skill>/scripts/route.py --list-skills
+python <skill>/scripts/route.py --task-type research --need arxiv --manager agy --same-model
 python <skill>/scripts/route.py --task-type review --builder agy --manager agy --same-model
 
-# 2. Auto-generate a complete Same-Model Expert Council (Zero-Prior lens briefs + native_subagents.json + batch_plan.json + synthesis_plan_template.md)
-python <skill>/scripts/agent_run.py council --brief "Investigate X and plan Y" --agent agy --model gemini-4-argon-high --task-type design
+# 2. Run a worker attaching specialized skills (--skill) or run a parallel batch capped by live hardware
+python <skill>/scripts/agent_run.py run --agent agy --brief brief.md --mode read --skill literature-search-arxiv
+python <skill>/scripts/agent_run.py batch plan.json
 ```
 
 ### Case A: Only Antigravity (`agy`) is Available
@@ -118,17 +120,9 @@ Compare the surviving approaches explicitly before committing:
 | **Key Evidence (`file:line`)** | `[E1] src/core/ a.py:40` | `[E2] src/auth.py:112` | Verified by spike `[E3]` |
 ```
 
-### Stage 5: Plan & Execute System Development (`agent_run.py dev`)
-Turn the synthesized option into an executable multi-module development pipeline:
-1. **Frozen Interface Contract (`interface-contract.md`):** Lock shared types, function signatures, and data invariants in `.orch/dev-<ts>/interface-contract.md` so parallel Builders never break each other's assumptions.
-2. **Disjoint Write Builders (`--module name:path/`):** Assign each Builder (`mode: write`, `EnableWriteTools: True`) a strictly disjoint `--may-write` directory (or an isolated branch/worktree via `--worktree` or Antigravity `Workspace="branch"`).
-3. **Zero-Prior Adversarial Test Builder (`--test-scope tests/`):** Assign a separate clean-context sub-agent to write unit/integration/edge-case tests in `tests/` directly from `interface-contract.md` (without seeing the Builder's implementation shortcuts), then run the test suite.
-4. **Independent Post-Build Code Reviewer (`mode: read`):** Audits the combined git diff and test output against the contract.
-5. **Reversal Trigger (Anti-Sunk-Cost Guardrail):** State upfront what observable signal during implementation will trigger an immediate pivot to the backup approach.
-
-```bash
-# Auto-generate (and optionally execute) the full Multi-Module Development Squad:
-python <skill>/scripts/agent_run.py dev --brief SPEC.md \
-       --module core:src/core/ --module api:src/api/ --test-scope tests/ \
-       --agent agy --model gemini-4-argon-high [--worktree] [--execute]
-```
+### Stage 5: Plan & Execute Parallel Work (`agent_run.py batch`)
+Turn the synthesized option into an executable parallel batch plan (`plan.json`):
+1. **Shared Blackboard (`--context-file`):** Share upstream specs, contracts, or findings directly via `--context-file <path>` so parallel workers read exact ground truth.
+2. **Specialized Skill Attachment (`--skill`):** If any worker needs deep domain procedures (e.g., `literature-search-arxiv`, `pubmed-database`, `pymol`), attach the skill via `"skill": ["<skill-name>"]` (or pass its `SKILL.md` path in a native sub-agent's prompt).
+3. **Disjoint Write Scopes (`--may-write` / `--worktree`):** When multiple workers modify files in parallel, assign strictly disjoint `may_write` paths (or `"worktree": true` / Antigravity `Workspace="branch"`).
+4. **Hardware-Aware Concurrency (`probe_hardware()`):** `agent_run.py batch plan.json` automatically measures live CPU cores, free RAM, disk space, and GPU VRAM to cap `wip` safely.
