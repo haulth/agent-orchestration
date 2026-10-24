@@ -7,7 +7,7 @@
 ## 1. Ten Golden Rules (How Agents Collaborate)
 
 1. **Delegate only when it pays:** Multi-agent runs cost ~5x–15x chat tokens; external CLI calls add ~12.5k (`codex`) to ~19.5k (`agy`) fixed overhead. Do tiny tasks (`<3` tool calls) yourself or via native subagents.
-2. **Parallel intelligence works; concurrent shared writes break:** Spawn parallel agents to explore, debug, or review. Keep writes single-threaded in a shared tree (`agent_run.py batch`) or isolate parallel writers with `--worktree` (Codex/Claude) or `Workspace: "branch"|"share"` (`agy`).
+2. **Unified Parallel Decomposition (`parallel` / `batch`):** Any complex task (research, design, debugging, code implementation, testing) is decomposed into independent sub-agents running **in parallel** with clean KV-cache context (`Zero-Prior Briefs`), shared upstream artifacts (`--context-file`), and—whenever files are modified—strictly disjoint `--may-write` scopes (or isolated `--worktree` / `Workspace: "branch"`).
 3. **Three Brief Modes (match ceremony to uncertainty):**
    - `tight` (4 lines: Intent/Done, Context, Scope, Output) → lookups, mechanical edits, small tests.
    - `guided` (Role lens, Intent, DoD, Context, Latitude, Finish line, Scope) → features, code review, docs.
@@ -22,13 +22,9 @@
 8. **Dynamic Model Discovery (never rely on stale hardcoded lists):** `discover.py` probes live models across all 3 harnesses (`agy models`, `~/.codex/.codex-global-state.json`, `~/.claude/cache/model-catalog/*` & `gateway-models.json`), and `route.py` scores and selects the best live model per tier automatically (`source: dynamic_discovered`).
 9. **Epistemic Independence = Different Model Family (or Single-Host Clean-Context + Alt Family/Lens):** An independent reviewer (`review`, `security-review`, `critique`) must come from a different model family (`openai` vs `google` vs `anthropic`) than the builder (`route.py --builder <vendor>` enforces this). If only 1 agent exists on the machine (`--single-host`), `route.py` automatically switches to an intra-host alternate model family (e.g., `agy` switching from `gemini-4-argon-high` to `claude-opus-5-5-high`) + **Zero-Prior Clean-Context Sub-Agent**.
 10. **Empirical Huddle (Spike before Debate, Synthesis Option C):** When panelists disagree on a testable fact, run a 2-minute micro-spike/command to measure the truth instead of running another prose debate round. On design trade-offs, ask panelists to synthesize a better **Option C**.
-11. **Single-Host De-Biasing & Multi-Horizon Planning (`Diverge → Falsify → Probe → Synthesize → Plan`):**
+11. **Unified Parallel Sub-Agents & De-Biasing (works across vendors OR on 1 agent / 1 model):**
     - **Zero-Prior (Blinded) Briefs:** Never leak your unverified hunch into a sub-agent's prompt; pass only symptoms, constraints, and `file:line` facts so your current conversation tokens cannot bias the sub-agent into overconfident confirmation.
-    - **Orthogonal Expert Council:** When using sub-agents on a single host or single model (e.g., only Antigravity `agy` via `define_subagent` + `invoke_subagent`), assign opposing Expert Lenses (`First-Principles Architect`, `Adversarial Red-Team Falsifier`, `Pragmatic Simplicity Minimalist`, `Runtime/Failure Engineer`) to explore multiple directions in parallel before locking in an implementation plan.
-12. **Multi-Module Code Implementation & System Development (`agent_run.py dev` / `implement` / `system-dev`):**
-    - **Frozen Interface Contract (`.orch/interface-contract.md`):** Before splitting code implementation across multiple Builders, freeze shared types, signatures, and invariants in `interface-contract.md` and pass it via `--context-file`.
-    - **Disjoint `--may-write` Scopes & Isolated Worktrees:** Give each Builder a strictly disjoint write scope (`--module core:src/core/ --module api:src/api/`) or an isolated branch/worktree (`--worktree` on Codex/Claude, `Workspace: "branch"` on `agy`).
-    - **Zero-Prior Adversarial Test Builder:** Assign a separate clean-context sub-agent to write tests in `tests/` directly from the spec (`interface-contract.md`) so tests are never biased by the Builder's implementation shortcuts.
+    - **Parallel Decomposition (`agent_run.py parallel` / `batch`):** Whether analyzing from orthogonal lenses or writing code across modules, split the work into independent packages with disjoint `--may-write` scopes (and shared `--context-file` contracts) and run them **in parallel**.
 
 ---
 
@@ -54,13 +50,10 @@ python <skill>/scripts/route.py --task-type design --manager agy --same-model
 python <skill>/scripts/route.py --task-type review --builder agy --manager agy --same-model
 python <skill>/scripts/route.py --task-type design --manager agy --single-host
 
-# 5. Generate (and optionally run) a Same-Model De-Biased Expert Council (Zero-Prior Briefs + Orthogonal Lenses)
-python <skill>/scripts/agent_run.py council --brief BRIEF.md --agent agy --model gemini-4-argon-high --task-type design
-
-# 6. Multi-Module Code Implementation & System Development (Frozen Contract + Disjoint Write Builders + Zero-Prior Test Builder)
-python <skill>/scripts/route.py --task-type system-dev --manager agy --same-model
-python <skill>/scripts/agent_run.py dev --brief SPEC.md --module core:src/core/ --module api:src/api/ \
-       --test-scope tests/ --agent codex --model gpt-6.1-sol [--worktree] [--execute]
+# 5. Unified Parallel Task Decomposition (works for analysis, critique, multi-module coding & testing; supports 1 model)
+python <skill>/scripts/agent_run.py parallel --brief BRIEF.md --agent agy --task-type design [--execute]
+python <skill>/scripts/agent_run.py parallel --brief SPEC.md --task-type implement \
+       --scope core:src/core/ --scope api:src/api/ --agent codex [--worktree] [--execute]
 ```
 
 ### B. Unified Cross-Agent Runner (`agent_run.py`)

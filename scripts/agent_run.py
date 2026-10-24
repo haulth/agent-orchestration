@@ -498,9 +498,12 @@ def run_one(a):
     changed, violations, git_note = [], [], "checked"
     after = snapshot(project) if (is_git and before is not None) else None
     if is_git and before is not None and after is not None:
-        changed = sorted(f for f in set(before) | set(after)
-                         if before.get(f) != after.get(f) and not f.startswith(".orch/"))
         own = a.may_write if a.mode == "write" else []
+        peer_own = getattr(a, "_peer_write_scopes", None) or []
+        raw_changed = sorted(f for f in set(before) | set(after)
+                             if before.get(f) != after.get(f) and not f.startswith(".orch/"))
+        # In parallel batch execution, ignore files legitimately owned by another parallel writer's disjoint scope
+        changed = [f for f in raw_changed if in_scope(f, own) or not in_scope(f, peer_own)]
         violations = [f for f in changed if not in_scope(f, own)]
     elif is_git:
         git_note = "unverified: git status failed before or after the run (scope unchecked)"
@@ -581,21 +584,27 @@ def cmd_batch(a):
         if not d.get("name"):
             d["name"] = d["_name"]
         specs.append(d)
-    writers = [s for s in specs if s["mode"] == "write"]
+    writers = [s for s in specs if s["mode"] == "write" and not s.get("worktree")]
+    for i, w1 in enumerate(writers):
+        for w2 in writers[i + 1:]:
+            if any(in_scope(p1, w2["may_write"]) or in_scope(p2, w1["may_write"])
+                   for p1 in w1["may_write"] for p2 in w2["may_write"]):
+                raise Usage(f"batch has overlapping --may-write scopes between '{w1['_name']}' ({w1['may_write']}) "
+                            f"and '{w2['_name']}' ({w2['may_write']}); keep write scopes disjoint for parallel execution")
+    for s in specs:
+        s["_peer_write_scopes"] = [p for w in writers if w["_name"] != s["_name"] for p in (w.get("may_write") or [])]
 
     def go(s):
-        ns = argparse.Namespace(**{k: v for k, v in s.items() if not k.startswith("_")})
+        ns = argparse.Namespace(**{k: v for k, v in s.items() if not k.startswith("_") or k == "_peer_write_scopes"})
         try:
             meta, _, _ = run_one(ns)
             return s["_name"], meta, None
         except Usage as e:
             return s["_name"], None, str(e)
 
-    readers = [s for s in specs if s["mode"] != "write"]
+    # All independent packages (research, critique, coding, testing) with disjoint scopes run in PARALLEL
     with ThreadPoolExecutor(max_workers=wip) as ex:
-        done = dict(zip([s["_name"] for s in readers], ex.map(go, readers)))
-    for s in writers:
-        done[s["_name"]] = go(s)
+        done = dict(zip([s["_name"] for s in specs], ex.map(go, specs)))
     results = [done[s["_name"]] for s in specs]
     worst = 0
     for name, m, err in results:
@@ -717,6 +726,17 @@ def cmd_dev(a):
     return 0
 
 
+def cmd_parallel(a):
+    """Unified parallel work decomposition: splits any task (research, design, critique, coding, testing)
+    into clean-context parallel sub-agents (read-only lenses OR disjoint write scopes)."""
+    models = ao.load_models()
+    canon_t = ao.canonical_task(a.task_type, models) or "explore"
+    writes = bool(a.module or (models.get("tasks", {}).get(canon_t) or {}).get("writes"))
+    if writes:
+        return cmd_dev(a)
+    return cmd_council(a)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -794,12 +814,27 @@ def main():
     d.add_argument("--execute", action="store_true", help="immediately execute the generated Builder + Tester batch plan")
     d.add_argument("--wip", type=int)
     d.add_argument("--allow-spawn", action="store_true")
+    pl = sub.add_parser("parallel", help="unified parallel task decomposition (splits any job—research, critique, coding, testing—into clean-context parallel sub-agents)")
+    pl.add_argument("--brief", required=True, help="path to brief/spec file or inline task description")
+    pl.add_argument("--task-type", default="explore", help="task type (explore, design, debug, review, critique, implement, system-dev, refactor, test)")
+    pl.add_argument("--module", "--scope", dest="module", action="append", default=[], help="optional write scopes as 'name:path/' for parallel file changes")
+    pl.add_argument("--test-scope", default="tests/")
+    pl.add_argument("--no-test", action="store_true")
+    pl.add_argument("--agent", default="agy", choices=list(ADAPTERS))
+    pl.add_argument("--model", help="model for parallel sub-agents (can use the exact same model across all workers)")
+    pl.add_argument("--effort")
+    pl.add_argument("--worktree", action="store_true")
+    pl.add_argument("--out")
+    pl.add_argument("--context-file", action="append", default=[])
+    pl.add_argument("--execute", action="store_true", help="run all generated packages in parallel immediately")
+    pl.add_argument("--wip", type=int)
+    pl.add_argument("--allow-spawn", action="store_true")
     a = p.parse_args()
     if a.cmd == "run":
         a.may_write = [x for grp in a.may_write for x in grp]
     try:
         sys.exit({"run": cmd_run, "batch": cmd_batch, "verdict": cmd_verdict, "stats": cmd_stats,
-                  "council": cmd_council, "dev": cmd_dev}[a.cmd](a))
+                  "parallel": cmd_parallel, "council": cmd_council, "dev": cmd_dev}[a.cmd](a))
     except Usage as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)

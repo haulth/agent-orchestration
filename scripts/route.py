@@ -249,23 +249,14 @@ def route(a):
     council = ao.expert_council_for_task(task_name)
     same_model_panel = [f"{v}/{tcfg['model']} [{lobj['lens']}" + (" (WRITE)" if lobj.get("writes") else "") + "]"
                         for lobj in council["lenses"][:4]]
-    council_cmd = (f"python {Path(__file__).resolve().parent / 'agent_run.py'} council "
-                   f"--brief BRIEF.md --agent {v} --model {tcfg['model']} --task-type {task_name}")
-    dev_cmd = (f"python {Path(__file__).resolve().parent / 'agent_run.py'} dev "
-               f"--brief SPEC.md --module core:src/core/ --module api:src/api/ --test-scope tests/ "
-               f"--agent {v} --model {tcfg['model']} [--worktree] [--execute]") if writes else None
-    if writes:
-        fanout_guide = {
-            "agy": f"Multi-module system build: freeze `.orch/interface-contract.md`, then spawn parallel write sub-agents via `define_subagent(EnableWriteTools=True)` + `invoke_subagent(Workspace='branch'|'inherit')` with disjoint `--may-write` scopes + a Zero-Prior Test Builder, OR run `{dev_cmd}`.",
-            "claude": f"Multi-module system build: freeze `.orch/interface-contract.md`, then spawn parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}', isolation='worktree')` builders + Test Builder, OR run `{dev_cmd}`.",
-            "codex": f"Multi-module system build: run `{dev_cmd}` (supports isolated `--worktree` per Builder + Zero-Prior Test Builder)."
-        }.get(v, "")
-    else:
-        fanout_guide = {
-            "agy": f"Same-model sub-agents (0 CLI overhead): call `define_subagent` + 2-4 parallel `invoke_subagent(Role='<Lens>', Prompt='<Zero-Prior Brief>', Model='inherit')` (all on `{tcfg['model']}`), OR run `{council_cmd}`.",
-            "claude": f"Same-model sub-agents: call 2-4 parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}', prompt='<Zero-Prior Brief + Lens>')`, OR run `{council_cmd}`.",
-            "codex": f"Same-model sub-agents: call 2-4 parallel `spawn_agent` on `{tcfg['model']}`, OR run `{council_cmd} --execute`."
-        }.get(v, "")
+    scope_args = " --scope core:src/core/ --scope api:src/api/ [--worktree]" if writes else ""
+    parallel_cmd = (f"python {Path(__file__).resolve().parent / 'agent_run.py'} parallel "
+                    f"--brief BRIEF.md --task-type {task_name}{scope_args} --agent {v} --model {tcfg['model']} [--execute]")
+    fanout_guide = {
+        "agy": f"Parallel sub-agents: call `define_subagent(EnableWriteTools={bool(writes)})` + 2-4 parallel `invoke_subagent(Model='inherit', Workspace='{'branch' if writes else 'inherit'}')` with Zero-Prior Briefs" + (" & disjoint `--may-write` scopes" if writes else "") + f", OR run `{parallel_cmd}`.",
+        "claude": f"Parallel sub-agents: call 2-4 parallel `Agent(subagent_type='general-purpose', model='{tcfg['model']}'" + (", isolation='worktree'" if writes else "") + f")`, OR run `{parallel_cmd}`.",
+        "codex": f"Parallel sub-agents: call 2-4 parallel `spawn_agent` on `{tcfg['model']}`, OR run `{parallel_cmd}`."
+    }.get(v, "")
 
     out.update(vendor=v, native=native, tier=tname, model=tcfg["model"], effort=tcfg.get("effort"),
                family=tcfg.get("family") or ao.model_family(v, tcfg["model"], models),
@@ -279,8 +270,7 @@ def route(a):
                debias_rules=council["debias_rules"],
                planning_workflow=council["planning_workflow"],
                same_model_panel=same_model_panel,
-               council_command=council_cmd,
-               dev_command=dev_cmd,
+               parallel_command=parallel_cmd,
                single_host_fanout=fanout_guide)
     if task.get("panel") or single_host_req:
         if not single_host_active and len(unique_hosts) > 1:
@@ -321,11 +311,10 @@ def render(o):
     if o.get("same_model_panel") and o.get("single_host") and not o.get("same_model"):
         lines.append("same-model panel (1 model, clean KV-cache per lens): " + " | ".join(o["same_model_panel"]))
     if o.get("expert_lenses") and (o.get("single_host") or o.get("writes") or o["task"] in ("explore", "design", "debug", "critique", "review", "security-review")):
-        role_label = "dev squad (write-enabled builders + QA + reviewer)" if o.get("writes") else "expert lenses (de-biased sub-agents)"
         lens_str = " | ".join(f"{x['lens']}{'[WRITE]' if x.get('writes') else '[READ]'} ({x['mandate'][:44]}...)" for x in o["expert_lenses"][:4])
-        lines.append(f"{role_label}: {lens_str}")
+        lines.append(f"parallel roles (clean-context sub-agents): {lens_str}")
         if o.get("single_host_fanout"):
-            lines.append(f"sub-agent fan-out ({o['vendor']}): {o['single_host_fanout']}")
+            lines.append(f"parallel fan-out ({o['vendor']}): {o['single_host_fanout']}")
     lines.append("run: " + o["command"])
     return "\n".join(lines)
 
