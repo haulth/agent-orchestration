@@ -1,6 +1,6 @@
 {
   "name": "agent-orchestration-skill",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Multi-agent orchestration skill & CLI engine for Claude Code, Codex CLI, and Antigravity (agy) with Orchestration Anatomy, Keyhole Interlocks, Dynamic Model Routing, and Ephemeral Skill Sandbox.",
   "license": "MIT",
   "author": "haulth",

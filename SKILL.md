@@ -1,6 +1,6 @@
 ---
 name: agent-orchestration
-version: 1.0.0
+version: 1.0.1
 license: MIT
 description: Manage subagents like a professional manager and coordinate intelligent multi-agent collaboration with low token cost. It covers whether to delegate at all, choosing a team shape, picking the right brief mode (tight, guided, or exploratory so structure never limits agent intelligence), routing to the right model family and vendor (Claude subagents, Codex CLI, Antigravity/agy, `claude -p`), sharing context directly via a Shared Blackboard (`--context-file`) and native peer messaging, running constructive & empirical huddles, and accepting results on evidence. Use it whenever a task could be split across agents or models, whenever you consider spawning subagents, running work in parallel, handing a task to Codex, Antigravity or Claude, getting a second opinion or independent review, or coordinating a multi-step job.
 ---

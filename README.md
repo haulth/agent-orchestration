@@ -21,9 +21,9 @@ Multi-agent and sub-agent orchestration skill for **Claude Code**, **Codex CLI**
 # Option 1: Install via Agent Skills CLI
 npx skills add haulth/agent-orchestration
 
-# Option 2: Install / inspect directly via NPX (zero dependencies)
-npx github:haulth/agent-orchestration
-npx github:haulth/agent-orchestration doctor
+# Option 2: Install / inspect directly via NPX (npm registry or GitHub)
+npx agent-orchestration-skill
+npx agent-orchestration-skill doctor
 ```
 
 Or install from a local clone (syncs to `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, and `~/.gemini/config/skills`):
