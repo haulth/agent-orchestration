@@ -1,29 +1,50 @@
 # agent-orchestration
 
-Skill điều phối đa agent và sub-agent (`Claude Code`, `Codex CLI`, `Antigravity / agy`), tập trung vào chia việc chạy song song hiệu quả theo phần cứng máy, chọn model tự động, chia sẻ trực tiếp skill từ agent mẹ sang agent con, và quản lý **Skill Sandbox tạm thời** an toàn.
+Multi-agent and sub-agent orchestration skill for **Claude Code**, **Codex CLI**, and **Antigravity (`agy`)**. Designed for hardware-aware parallel execution, dynamic zero-token model routing, structural work decomposition (**Orchestration Anatomy**), prerequisite/threshold keyhole interlocks, direct parent-to-child skill sharing, and an ephemeral skill sandbox.
 
-## Điểm cốt lõi
-- **Tự động nhận diện model khả dụng (0 token):** Quét trực tiếp các model đang có trên máy (`route.py --list-models`) và chọn model phù hợp nhất theo độ khó tác vụ (hỗ trợ cả chế độ 1 agent `--single-host` hoặc cùng 1 model `--same-model`).
-- **Chia sẻ trực tiếp Skill từ Agent mẹ sang Agent con (`--skill` — có sẵn là dùng ngay, không cài thêm):** Tự động dò các skill chuyên sâu mà Agent mẹ đang có (`route.py --list-skills`) và truyền thẳng đường dẫn `SKILL.md` + quyền đọc thư mục (`--add-dir`) cho Agent con.
-- **Ephemeral Skill Sandbox (`skill_sandbox.py`):** Khi thiếu skill chuyên sâu chưa có trên máy, chỉ tìm từ các kho chính hãng/uy tín cao (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, hoặc repo đạt chuẩn uy tín), **bắt buộc hỏi ý kiến người dùng trước khi cài (`--approved-by-user`)**, quét bảo mật tĩnh và lưu tạm vào bộ nhớ riêng (`~/.agent-orchestration/sandbox-skills/`) — xóa sạch bất cứ lúc nào (`remove` / `purge`) mà không ảnh hưởng hệ thống.
-- **Giải phẫu công việc & Chốt chặn Khóa liên động (`Orchestration Anatomy & Keyhole Interlock` — `anatomy.py` & `batch --audit`):**
-  - **Size Gate (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Định cỡ quy mô ngay từ đầu; nếu vượt quá 8 gói việc (`Epic`), tự động dừng để đề xuất lát cắt `Hero` trước.
-  - **Truth Lock & Keyhole Invariants (`truth_contract` + `--invariant` + `truth_hash`):** Khóa chặt các quy chuẩn tiên quyết và thông số ngưỡng của người dùng (`--invariant "PORT=8080" --invariant "MAX_LATENCY_MS<=200" --invariant "must:..." --invariant "forbid:..."`) kèm mã băm `truth_hash` (SHA-256) và khóa quyền ghi `truth-contract.md`.
-  - **Chống tự ý đổi ngầm & Lan truyền thay đổi (`check_invariant_drift`, `detect_cross_package_conflicts`, `anatomy.py amend`):** Chặn triệt để tình trạng *"1 ông tự ý đổi thông số, mấy ông khác nín thin dẫn đến xung đột"*. Tự động quét code/output sau mỗi đợt sóng để bắt lỗi lệch ngưỡng (`INVARIANT_DRIFT`, `THRESHOLD_VIOLATION`) hoặc lệch hằng số giữa các gói (`CROSS_PACKAGE_CONFLICT`). Khi cần đổi thông số có bằng chứng (`truth_amendments`), lệnh `anatomy.py amend` (hoặc `batch --auto-amend`) tự động nâng `truth_version`, gắn thông báo `.orch/truth-amendment-vN.md` vào mọi gói việc và đánh dấu các gói đã chạy bằng thông số cũ là `stale_packages` để buộc đồng bộ lại.
-  - **Audit to Zero (`anatomy.py audit` / `batch --audit`) & 4x Junction Check (`anatomy.py inspect`):** Kiểm toán tự động **0 lỗi ở 8 hạng mục** trước khi chạy và soi cận cảnh **4x tại các khớp nối** sau khi chạy.
-- **Điều phối song song theo phần cứng thực tế (`batch` & native sub-agents):** Tự động đo **CPU cores, RAM trống, dung lượng ổ cứng và GPU VRAM** (`probe_hardware()`) để giới hạn số luồng song song an toàn (`recommended_wip`), kết hợp ngữ cảnh sạch (`Zero-Prior Brief`), bảng đen dùng chung (`--context-file`) và khóa vùng ghi tách biệt (`--may-write` / `--worktree`).
-- **Luật bằng chứng (`No Proof = No Claim`):** Mọi kết luận và phản biện (`assumptions_challenged`) bắt buộc kèm dẫn chứng kiểm chứng được (`file:line`, `command -> output`, `DOI/arXiv/PMID/URL`).
+## Core Capabilities
 
-## Lệnh sử dụng nhanh
+- **Zero-Token Live Model Discovery & Routing (`discover.py` + `route.py`):** Automatically probes available models across installed harnesses (`route.py --list-models`) and selects the optimal model per tier (`fast`, `standard`, `frontier`, `frontier_max`), supporting cross-vendor, single-host (`--single-host`), and single-model (`--same-model`) operation with Zero-Prior de-biased briefs.
+- **Orchestration Anatomy & Keyhole Interlocks (`anatomy.py` + `batch --audit`):**
+  - **Upfront Sizing Gate (`Micro` <=1 | `Figure` 2–4 | `Hero` 5–8 | `Epic` >8):** Classifies plan scale up front and gates `Epic` plans (`>8` packages) behind a `Hero` slice proposal unless explicitly approved (`--allow-epic`).
+  - **Truth Lock & Keyhole Invariants (`truth_contract` + `--invariant` + `truth_hash`):** Locks user prerequisites, shared constants, and numeric threshold bounds (`KEY=VAL`, `KEY<=VAL`, `KEY>=VAL`, `must:PAT`, `forbid:PAT`) in `.orch/truth-contract.md` with a SHA-256 `truth_hash` and write-locks the contract against unilateral worker edits.
+  - **Topological Wave Settler & Audit to Zero (`settle` + `audit`):** Resolves explicit and implicit `outputs -> context_file` dependencies into parallel execution waves (`Wave 0, Wave 1, ...`) and proves **0 structural and interlock defects** across 8 checks (`clearance`, `cycles`, `terminals`, `support`, `stand_in_briefs`, `skill_mounts`, `truth_contract`, `interlocks`) before running any agent.
+  - **Anti-Silent-Mutation & Change-Ripple Protocol (`amend` + `inspect`):** Scans deliverables after each wave to block threshold drift (`INVARIANT_DRIFT`, `THRESHOLD_VIOLATION`) and conflicting constants across packages (`CROSS_PACKAGE_CONFLICT`). When a locked parameter must change with empirical proof (`truth_amendments`), `anatomy.py amend` (or `batch --auto-amend`) increments `truth_version`, broadcasts `.orch/truth-amendment-vN.md` into all packages' `context_file`, and flags already-run packages with the old value in `stale_packages` for mandatory resync.
+- **Direct Parent-to-Child Skill Sharing (`--skill`):** Discovers specialized skills already available on the parent agent (`route.py --list-skills`) and mounts their `SKILL.md` path and directory (`--add-dir`) directly into child agents without redundant installation.
+- **Ephemeral Skill Sandbox (`skill_sandbox.py`):** When a specialized skill is not installed locally, searches trusted repositories (`anthropics/skills`, `openai/skills`, `vercel-labs/agent-skills`, `huggingface/skills`, `obra/superpowers`, or verified GitHub repositories with `>= 50` stars), requires explicit user approval (`--approved-by-user`), runs static security checks, and installs into isolated skill memory (`~/.agent-orchestration/sandbox-skills/`) that can be removed or purged at any time.
+- **Hardware-Aware Parallel Execution (`probe_hardware()`):** Dynamically probes CPU cores, available RAM, free disk space, and GPU VRAM to cap parallel `wip` safely, isolating concurrent writes via disjoint `--may-write` scopes or Git worktrees (`--worktree`).
+- **Anti-Hallucination Evidence Law (`No Proof = No Claim`):** Every conclusion and premise challenge (`assumptions_challenged`) must cite verifiable ground truth (`file:line`, `command -> output`, or `DOI/arXiv/PMID/URL`).
+
+## Installation
 
 ```bash
-# 1. Xem model khả dụng, skill có sẵn trên Agent mẹ và gợi ý định tuyến (0 token)
+# Option 1: Install via Agent Skills CLI
+npx skills add haulth/agent-orchestration
+
+# Option 2: Install / inspect directly via NPX (zero dependencies)
+npx github:haulth/agent-orchestration
+npx github:haulth/agent-orchestration doctor
+```
+
+Or install from a local clone (syncs to `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, and `~/.gemini/config/skills`):
+
+```powershell
+.\install\install.ps1   # Windows PowerShell
+```
+```bash
+./install/install.sh    # macOS / Linux
+```
+
+## Quick Start Commands
+
+```bash
+# 1. Inspect available models, parent skills, and optimal routing (0 tokens)
 python <skill>/scripts/route.py --list-models
 python <skill>/scripts/route.py --list-skills
 python <skill>/scripts/route.py --task-type research --need arxiv --manager agy --same-model
 
-# 2. Giải phẫu công việc + Khóa ngưỡng tiên quyết (--invariant) + Audit to Zero + Amend lan truyền & Soi khớp nối 4x
-python <skill>/scripts/anatomy.py init --goal "Triển khai & kiểm chứng module X" \
+# 2. Orchestration Anatomy: Init Truth Contract + Keyhole Invariants, Audit to Zero, Execute & Inspect 4x Seams
+python <skill>/scripts/anatomy.py init --goal "Implement & verify distributed service" \
        --invariant "PORT=8080" --invariant "MAX_LATENCY_MS<=200" \
        --pkg "contract:guided::src/types.py::.orch/contract-out.md" \
        --pkg "impl:guided:contract:src/core/::src/core/engine.py" \
@@ -31,14 +52,14 @@ python <skill>/scripts/anatomy.py init --goal "Triển khai & kiểm chứng mod
 python <skill>/scripts/anatomy.py audit .orch/plan.json
 python <skill>/scripts/agent_run.py batch .orch/plan.json [--audit] [--auto-amend]
 python <skill>/scripts/anatomy.py amend .orch/plan.json --set "MAX_LATENCY_MS<=250" \
-       --reason "Đo thực nghiệm p99" --evidence "bench.py:42 -> 235ms"
+       --reason "Measured p99 cold start" --evidence "bench.py:42 -> 235ms"
 python <skill>/scripts/anatomy.py inspect .orch/plan.json
 
-# 3. Chạy worker đơn lẻ (chia sẻ thẳng path skill của Agent mẹ qua --skill)
+# 3. Run a single worker with parent skill sharing (--skill) and shared blackboard (--context-file)
 python <skill>/scripts/agent_run.py run --agent agy --brief brief.md --mode read \
        --skill literature-search-arxiv --context-file .orch/spec.md
 
-# 4. Skill Sandbox tạm thời (chỉ dùng khi máy chưa có skill; BẮT BUỘC hỏi người dùng trước khi cài)
+# 4. Ephemeral Skill Sandbox (used only when parent lacks a skill; requires user approval before install)
 python <skill>/scripts/skill_sandbox.py check <keyword>
 python <skill>/scripts/skill_sandbox.py search <query> --min-stars 50
 python <skill>/scripts/skill_sandbox.py install <owner/repo> --subpath <path> --approved-by-user
@@ -47,21 +68,6 @@ python <skill>/scripts/skill_sandbox.py remove <name>
 python <skill>/scripts/skill_sandbox.py purge [--expired]
 ```
 
-## Cài đặt & Sử dụng qua NPX
+## License
 
-```bash
-# Cách 1: Cài qua chuẩn Agent Skills CLI (Claude Code, Codex, Antigravity, Cursor...)
-npx skills add haulth/agent-orchestration
-
-# Cách 2: Chạy trực tiếp trình cài đặt / kiểm tra hệ thống qua NPX (0 dependencies)
-npx github:haulth/agent-orchestration
-npx github:haulth/agent-orchestration doctor
-```
-
-Hoặc cài từ bản clone nội bộ:
-```powershell
-.\install\install.ps1   # Windows (đồng bộ vào ~/.claude, ~/.agents, ~/.codex, ~/.gemini/config)
-```
-```bash
-./install/install.sh    # macOS / Linux
-```
+MIT
