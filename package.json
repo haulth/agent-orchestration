@@ -22,11 +22,11 @@
     "CATALOG.md",
     "README.md",
     "LICENSE",
-    "bin/",
-    "scripts/",
-    "references/",
-    "assets/",
-    "install/"
+    "bin/*.mjs",
+    "scripts/*.py",
+    "references/**/*.md",
+    "assets/*.json",
+    "install/*"
   ],
   "engines": {
     "node": ">=18.0.0"
