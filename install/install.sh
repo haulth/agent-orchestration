@@ -23,7 +23,7 @@ for T in "$HOME_DIR/.claude/skills/$NAME" "$HOME_DIR/.agents/skills/$NAME" "$HOM
   echo "install $T"
   if [ $DRY = 0 ]; then
     mkdir -p "$T"
-    (cd "$SRC" && tar --exclude='install' --exclude='tests' --exclude='bin' --exclude='node_modules' --exclude='__pycache__' --exclude='.orch' --exclude='.sandbox-skills' --exclude='.git' --exclude='package.json' --exclude='package-lock.json' --exclude='LICENSE' --exclude='.gitignore' --exclude='*.pyc' -cf - .) | (cd "$T" && tar -xf -)
+    (cd "$SRC" && tar --exclude='tests' --exclude='node_modules' --exclude='__pycache__' --exclude='.orch' --exclude='.sandbox-skills' --exclude='.git' --exclude='package-lock.json' --exclude='.gitignore' --exclude='*.pyc' -cf - .) | (cd "$T" && tar -xf -)
   fi
 done
 if [ $DRY = 0 ]; then

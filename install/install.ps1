@@ -44,7 +44,7 @@ foreach ($t in $targets) {
   if (-not $DryRun) {
     New-Item -ItemType Directory -Force $t | Out-Null
     # Use /MIR so even if the target directory is a shell's current working directory on Windows, contents sync cleanly
-    robocopy $src $t /MIR /XD install tests bin node_modules __pycache__ .orch .sandbox-skills .git /XF *.pyc .gitignore LICENSE package.json package-lock.json /NFL /NDL /NJH /NJS /NP | Out-Null
+    robocopy $src $t /MIR /XD tests node_modules __pycache__ .orch .sandbox-skills .git /XF *.pyc .gitignore package-lock.json /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE) for $t" }
   }
 }
