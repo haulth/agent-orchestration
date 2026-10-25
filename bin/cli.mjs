@@ -23,6 +23,7 @@ const COPY_ITEMS = [
   "README.md",
   "LICENSE",
   "package.json",
+  ".npmignore",
   "bin",
   "install",
   "assets",
